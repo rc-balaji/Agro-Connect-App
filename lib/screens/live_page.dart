@@ -209,7 +209,7 @@ class _Hero extends StatelessWidget {
           const SizedBox(height: 16),
           Row(
             children: [
-              _MiniInfo(label: 'Device', value: MqttConfig.deviceId),
+              const _MiniInfo(label: 'Device', value: MqttConfig.deviceId),
               const SizedBox(width: 10),
               _MiniInfo(label: 'Last packet', value: ageText),
               const SizedBox(width: 10),

@@ -49,11 +49,11 @@ class SystemPage extends StatelessWidget {
           title: 'MQTT',
           icon: Icons.hub_rounded,
           children: [
-            _Row(label: 'Broker', value: MqttConfig.broker),
-            _Row(label: 'Port', value: '${MqttConfig.port}'),
+            const _Row(label: 'Broker', value: MqttConfig.broker),
+            const _Row(label: 'Port', value: '${MqttConfig.port}'),
             _Row(label: 'Connection', value: controller.mqttConnected ? 'Connected' : 'Disconnected'),
             _Row(label: 'Broker ping', value: controller.brokerPingLatencyMs > 0 ? '${controller.brokerPingLatencyMs} ms' : '--'),
-            _Row(label: 'Device', value: MqttConfig.deviceId),
+            const _Row(label: 'Device', value: MqttConfig.deviceId),
             const SizedBox(height: 10),
             SizedBox(
               width: double.infinity,
@@ -66,7 +66,7 @@ class SystemPage extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 12),
-        _Section(
+        const _Section(
           title: 'Topics',
           icon: Icons.route_rounded,
           children: [
