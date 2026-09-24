@@ -1,0 +1,11 @@
+version:
+  revision: "0000000000000000000000000000000000000000"
+  channel: "stable"
+
+project_type: app
+
+migration:
+  platforms:
+    - platform: root
+      create_revision: 0000000000000000000000000000000000000000
+      base_revision: 0000000000000000000000000000000000000000
