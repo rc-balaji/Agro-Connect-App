@@ -130,3 +130,9 @@ The app measures the command round trip from publish until that ACK arrives.
 ## Prototype broker note
 
 `broker.emqx.io` is a public broker and the current topic names are open. This is suitable for the present prototype/demo. Before deploying this as a real farm product, move to a private authenticated MQTT broker and device-specific credentials/topics.
+
+## Branding update
+
+- App icon updated with the selected minimal AGRO CONNECT icon.
+- Animated in-app splash screen added with icon-centric motion graphics, glow rings, IoT chips, and a branded loading transition.
+- GitHub workflow now generates Android launcher icons automatically before analyze/build.
