@@ -51,6 +51,9 @@ jobs:
               candidate.write_text(text)
           PY
 
+      - name: Configure Firebase Android
+        run: python3 tool/patch_android_firebase.py
+
       - name: Align Android Java/Kotlin JVM targets
         run: python3 tool/patch_android_jvm.py
 
@@ -69,8 +72,8 @@ jobs:
       - name: Test
         run: flutter test
 
-      - name: Build release APK
-        run: flutter build apk --release
+      - name: Build test APK (App Check debug provider)
+        run: flutter build apk --release --dart-define=AGRO_APP_CHECK_DEBUG=true
 
       - name: Build release App Bundle
         run: flutter build appbundle --release
@@ -78,7 +81,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: agro-connect-apk
+          name: agro-connect-test-apk
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
 

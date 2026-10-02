@@ -3,10 +3,12 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../controllers/agro_controller.dart';
+import '../controllers/cygnus_controller.dart';
 import '../controllers/plan_controller.dart';
 import '../controllers/foreground_monitor_controller.dart';
 import '../core/app_theme.dart';
 import 'control_page.dart';
+import 'cygnus_page.dart';
 import 'history_page.dart';
 import 'leaf_ai_page.dart';
 import 'live_page.dart';
@@ -34,6 +36,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
     'Monitor',
     'History',
     'Plant Health',
+    'Cygnus',
     'Settings',
   ];
 
@@ -47,6 +50,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
       const MonitorPage(),
       const HistoryPage(),
       LeafAiPage(key: _leafAiKey),
+      CygnusPage(onNavigate: _navigateByName),
       const SystemPage(),
     ];
     WidgetsBinding.instance.addObserver(this);
@@ -54,6 +58,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
       context.read<AgroController>().initialize();
       context.read<PlanController>().initialize();
       context.read<ForegroundMonitorController>().initialize();
+      context.read<CygnusController>().initialize();
     });
   }
 
@@ -75,6 +80,22 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   void _selectPage(int value) {
     Navigator.of(context).maybePop();
     if (_index != value) setState(() => _index = value);
+  }
+
+  void _navigateByName(String page) {
+    const mapping = <String, int>{
+      'home': 0,
+      'motors': 1,
+      'plans': 2,
+      'monitor': 3,
+      'history': 4,
+      'plant_health': 5,
+      'cygnus': 6,
+      'settings': 7,
+    };
+    final target = mapping[page.toLowerCase()];
+    if (target == null || !mounted) return;
+    if (_index != target) setState(() => _index = target);
   }
 
   Future<void> _handleBack() async {
@@ -135,7 +156,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
             Builder(
               builder: (context) => _ShellHeader(
                 title: _labels[_index],
-                showAiTag: _index == 5,
+                showAiTag: _index == 5 || _index == 6,
                 onMenu: () => Scaffold.of(context).openDrawer(),
               ),
             ),
@@ -330,6 +351,7 @@ class _AgroDrawer extends StatelessWidget {
       (icon: Icons.monitor_heart_outlined, label: 'Monitor'),
       (icon: Icons.show_chart_rounded, label: 'History'),
       (icon: Icons.eco_rounded, label: 'Plant Health'),
+      (icon: Icons.auto_awesome_rounded, label: 'Cygnus'),
       (icon: Icons.settings_outlined, label: 'Settings'),
     ];
 
@@ -401,12 +423,12 @@ class _AgroDrawer extends StatelessWidget {
                           fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
                         ),
                       ),
-                      trailing: (index == 5 || selected)
+                      trailing: (index == 5 || index == 6 || selected)
                           ? Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                if (index == 5) const _MiniAiTag(),
-                                if (index == 5 && selected) const SizedBox(width: 6),
+                                if (index == 5 || index == 6) const _MiniAiTag(),
+                                if ((index == 5 || index == 6) && selected) const SizedBox(width: 6),
                                 if (selected)
                                   const Icon(
                                     Icons.chevron_right_rounded,

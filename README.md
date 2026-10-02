@@ -14,7 +14,7 @@ Production-style Flutter client for the AGRO CONNECT ESP32 smart-farming prototy
 
 The ESP32 keeps its own client ID (`AGRO_CONNECT`). The mobile app always generates a unique MQTT client ID to avoid kicking the ESP32 off the broker.
 
-## App tabs
+## App sections
 
 1. **Live** — realtime temperature, humidity, soil, water level, ESP32 status, internet status, MQTT status, last command round-trip.
 2. **Control** — automatic soil output status + Motor 1/2/3 remote controls with hardware ACK.
@@ -121,7 +121,7 @@ The app measures the command round trip from publish until that ACK arrives.
 
 - MQTT TCP directly from Android — no polling/webhook hop for controls.
 - MQTT client auto-reconnect + subscription restore.
-- Bottom navigation preserves pages with `IndexedStack`.
+- Side-menu navigation preserves pages with `IndexedStack`.
 - Telemetry history is capped at 300 points.
 - History persistence is debounced to avoid disk writes on every MQTT packet.
 - History chart renders only the latest 80 cached points.
@@ -223,3 +223,27 @@ flutter build apk --release
 Settings now includes an opt-in **Background live status** control. When enabled, AGRO CONNECT runs a dedicated foreground MQTT monitor with a persistent farm-status notification. The user can independently choose device status, temperature, humidity, soil moisture, water level and motor status. Plan activity alerts are separate dismissible notifications.
 
 The service uses Android `specialUse`, keeps CPU/Wi-Fi locks only while the user has explicitly enabled it, and is configured with task-removal/restart/boot recovery. See `BACKGROUND-MONITOR-NOTES.md` for the runtime design and Android platform caveats.
+
+## Cygnus — in-app farm agent
+
+Cygnus is integrated as a first-class side-menu experience instead of a separate
+chatbot demo. It uses Firebase AI Logic function calling to invoke the same
+controllers used by the manual UI, so AI and manual controls share one source of
+truth.
+
+Key behavior:
+
+- natural multilingual chat (English, Tamil/Tanglish, Hindi, Malayalam, Kannada)
+- current telemetry and truly live chat cards backed by the existing MQTT stream
+- recent metric trend charts in the conversation
+- Motor 1/2/3 immediate commands with the existing hardware ACK path
+- conversational schedule create/update/delete/enable/disable through the
+  existing Next.js scheduling APIs; create/update/delete use final confirmation
+- Plant Health photo capture/gallery runs the bundled TFLite model on-device,
+  then places diagnosis and treatment guidance in the same chat
+- Firebase RTDB chat sessions with local-history fallback
+- push-to-talk and continuous turn-by-turn voice conversation using the phone's
+  speech recognizer and TTS
+- Cygnus failure never disables Home, Motors, Plans, Plant Health, or monitoring
+
+See `FIREBASE-CYGNUS-SETUP.md` before the first Cygnus test.

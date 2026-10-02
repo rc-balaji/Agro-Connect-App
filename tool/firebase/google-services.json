@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "511349752641",
+    "firebase_url": "https://agro-connect-29b39-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "agro-connect-29b39",
+    "storage_bucket": "agro-connect-29b39.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:511349752641:android:cb380e3a64c8f0ccc517c0",
+        "android_client_info": {
+          "package_name": "com.agroconnect.agro_connect"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAwp_pMgZQAl4VJnxKMDHRBAHAO62H-9xs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
