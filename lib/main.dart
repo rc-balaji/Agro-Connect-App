@@ -1,9 +1,9 @@
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import 'controllers/agro_controller.dart';
+import 'controllers/plan_controller.dart';
 import 'core/app_theme.dart';
 import 'screens/splash_screen.dart';
 
@@ -19,8 +19,11 @@ void main() {
   );
 
   runApp(
-    ChangeNotifierProvider(
-      create: (_) => AgroController(),
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => AgroController()),
+        ChangeNotifierProvider(create: (_) => PlanController()),
+      ],
       child: const AgroConnectApp(),
     ),
   );

@@ -18,9 +18,10 @@ The ESP32 keeps its own client ID (`AGRO_CONNECT`). The mobile app always genera
 
 1. **Live** — realtime temperature, humidity, soil, water level, ESP32 status, internet status, MQTT status, last command round-trip.
 2. **Control** — automatic soil output status + Motor 1/2/3 remote controls with hardware ACK.
-3. **Monitor** — sensor bars, ADC/distance diagnostics, uptime and broker ping.
-4. **History** — locally persisted telemetry chart and recent readings.
-5. **System** — network probe, MQTT reconnect, broker/topic details and local-history controls.
+3. **Plan** — Firebase-backed server schedules for Motor 1/2/3 with monthly calendar, exact seconds, Once/Daily/Selected-days recurrence, Enable/Disable, edit, duplicate and delete.
+4. **Monitor** — sensor bars, ADC/distance diagnostics, uptime and broker ping.
+5. **History** — locally persisted telemetry chart and recent readings.
+6. **System** — network probe, MQTT reconnect, broker/topic details and local-history controls.
 
 ## Network behavior
 
@@ -136,3 +137,35 @@ The app measures the command round trip from publish until that ACK arrives.
 - App icon updated with the selected minimal AGRO CONNECT icon.
 - Animated in-app splash screen added with icon-centric motion graphics, glow rings, IoT chips, and a branded loading transition.
 - GitHub workflow now generates Android launcher icons automatically before analyze/build.
+
+## Plan tab — server schedules
+
+This build adds a sixth **Plan** tab backed by the existing Next.js/Vercel API and Firebase schedule store.
+
+Default API base URL:
+
+```text
+https://acro-connect.vercel.app
+```
+
+Override it at build time if needed:
+
+```bash
+flutter build apk --release --dart-define=AGRO_API_BASE_URL=https://your-domain.vercel.app
+```
+
+Plan features:
+
+- Motor 1 / Motor 2 / Motor 3 independent calendar views.
+- Google Calendar-style monthly view with plan dots.
+- Create flow starts with motor selection.
+- Exact `HH:MM:SS` start time in Asia/Kolkata (IST).
+- Duration stored in seconds with quick presets.
+- Repeat modes: Once, Daily, Selected days.
+- Optional repeat end date.
+- Enable / Disable radio-style state control.
+- Edit, duplicate, delete and refresh.
+- Server overlap validation errors are surfaced directly in the app.
+- Scheduler health badge displays whether the server scheduler is configured and reachable.
+
+The Flutter app never stores the Cloudflare scheduler secret. Schedule CRUD goes to the Next.js API; the Next.js server owns Firebase + scheduler integration. Manual motor control continues to use direct MQTT independently.

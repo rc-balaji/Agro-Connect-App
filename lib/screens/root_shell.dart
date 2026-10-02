@@ -2,11 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../controllers/agro_controller.dart';
+import '../controllers/plan_controller.dart';
 import '../core/app_theme.dart';
 import 'control_page.dart';
 import 'history_page.dart';
 import 'live_page.dart';
 import 'monitor_page.dart';
+import 'plan_page.dart';
 import 'system_page.dart';
 
 class RootShell extends StatefulWidget {
@@ -22,6 +24,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   static const _pages = <Widget>[
     LivePage(),
     ControlPage(),
+    PlanPage(),
     MonitorPage(),
     HistoryPage(),
     SystemPage(),
@@ -33,6 +36,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<AgroController>().initialize();
+      context.read<PlanController>().initialize();
     });
   }
 
@@ -40,6 +44,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       context.read<AgroController>().onAppResumed();
+      context.read<PlanController>().refresh();
     }
   }
 
@@ -104,6 +109,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
         destinations: const [
           NavigationDestination(icon: Icon(Icons.stream_rounded), label: 'Live'),
           NavigationDestination(icon: Icon(Icons.tune_rounded), label: 'Control'),
+          NavigationDestination(icon: Icon(Icons.event_repeat_rounded), label: 'Plan'),
           NavigationDestination(icon: Icon(Icons.monitor_heart_outlined), label: 'Monitor'),
           NavigationDestination(icon: Icon(Icons.show_chart_rounded), label: 'History'),
           NavigationDestination(icon: Icon(Icons.settings_outlined), label: 'System'),

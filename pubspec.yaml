@@ -1,5 +1,5 @@
 name: agro_connect
-version: 1.0.0+1
+version: 1.1.0+2
 publish_to: none
 
 description: AGRO CONNECT realtime smart farming mobile app.
@@ -15,6 +15,7 @@ dependencies:
   provider: ^6.1.5+1
   shared_preferences: ^2.5.5
   fl_chart: ^1.2.0
+  http: ^1.2.2
 
 dev_dependencies:
   flutter_test:
