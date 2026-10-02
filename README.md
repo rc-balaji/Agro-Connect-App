@@ -169,3 +169,29 @@ Plan features:
 - Scheduler health badge displays whether the server scheduler is configured and reachable.
 
 The Flutter app never stores the Cloudflare scheduler secret. Schedule CRUD goes to the Next.js API; the Next.js server owns Firebase + scheduler integration. Manual motor control continues to use direct MQTT independently.
+
+
+## Leaf AI — offline disease screening
+
+The side drawer now contains **Leaf AI**. It supports:
+
+- Live camera scanning with repeated on-device inference.
+- Camera capture and gallery-photo analysis.
+- 38 PlantVillage classes across 14 crops.
+- TensorFlow Lite / LiteRT inference with no cloud inference call.
+- English, Tamil, Hindi, Malayalam and Kannada guidance.
+- Confidence-aware results, top alternatives, treatment and prevention guidance.
+
+### Model setup
+
+The source ZIP contains a tiny placeholder at the model asset path so the repository structure is complete. GitHub Actions automatically runs:
+
+```bash
+bash tool/fetch_ai_model.sh
+```
+
+before analyze/test/build, replacing the placeholder with the actual ~3 MB quantized MobileNetV3 TFLite model. For a local build, run the same command once before `flutter run`. After installation the model is inside the app and Leaf AI works offline.
+
+### Android
+
+Camera permission is already included. The workflow forces Android minSdk 24 for the current camera/image-picker plugin line.

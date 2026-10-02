@@ -28,6 +28,9 @@ jobs:
       - name: Show Flutter version
         run: flutter --version
 
+      - name: Download offline Leaf AI model
+        run: bash tool/fetch_ai_model.sh
+
       - name: Generate Android platform scaffold
         run: |
           rm -rf /tmp/agro_scaffold
@@ -35,10 +38,19 @@ jobs:
           rm -rf android
           cp -R /tmp/agro_scaffold/android ./android
           cp tool/android/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+          python3 - <<'PY'
+          from pathlib import Path
+          for candidate in [Path('android/app/build.gradle.kts'), Path('android/app/build.gradle')]:
+              if not candidate.exists():
+                  continue
+              text = candidate.read_text()
+              text = text.replace('minSdk = flutter.minSdkVersion', 'minSdk = 24')
+              text = text.replace('minSdkVersion flutter.minSdkVersion', 'minSdkVersion 24')
+              candidate.write_text(text)
+          PY
 
       - name: Install packages
         run: flutter pub get
-
 
       - name: Generate launcher icons
         run: dart run flutter_launcher_icons

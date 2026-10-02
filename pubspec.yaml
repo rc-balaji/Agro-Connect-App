@@ -1,8 +1,8 @@
 name: agro_connect
-version: 1.1.0+2
+version: 1.2.0+3
 publish_to: none
 
-description: AGRO CONNECT realtime smart farming mobile app.
+description: AGRO CONNECT realtime smart farming mobile app with offline Leaf AI.
 
 environment:
   sdk: '>=3.9.0 <4.0.0'
@@ -16,6 +16,10 @@ dependencies:
   shared_preferences: ^2.5.5
   fl_chart: ^1.2.0
   http: ^1.2.2
+  camera: ^0.12.0+1
+  image_picker: ^1.2.2
+  tflite_flutter: ^0.12.1
+  image: ^4.10.1
 
 dev_dependencies:
   flutter_test:
@@ -26,6 +30,8 @@ flutter:
   uses-material-design: true
   assets:
     - assets/branding/app_icon.png
+    - assets/models/plant_disease_mobilenetv3.tflite
+    - assets/models/labels.txt
 
 flutter_launcher_icons:
   android: true
@@ -33,4 +39,4 @@ flutter_launcher_icons:
   image_path: assets/branding/app_icon.png
   adaptive_icon_foreground: assets/branding/app_icon.png
   adaptive_icon_background: '#07130F'
-  min_sdk_android: 21
+  min_sdk_android: 24
