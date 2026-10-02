@@ -38,6 +38,8 @@ jobs:
           rm -rf android
           cp -R /tmp/agro_scaffold/android ./android
           cp tool/android/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+          mkdir -p android/app/src/main/res/drawable
+          cp tool/android/ic_stat_agro.xml android/app/src/main/res/drawable/ic_stat_agro.xml
           python3 - <<'PY'
           from pathlib import Path
           for candidate in [Path('android/app/build.gradle.kts'), Path('android/app/build.gradle')]:
@@ -51,6 +53,9 @@ jobs:
 
       - name: Align Android Java/Kotlin JVM targets
         run: python3 tool/patch_android_jvm.py
+
+      - name: Configure Android notification desugaring
+        run: python3 tool/patch_android_notifications.py
 
       - name: Install packages
         run: flutter pub get

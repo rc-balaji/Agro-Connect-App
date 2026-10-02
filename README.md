@@ -217,3 +217,9 @@ flutter build apk --release
 - End-user screens use customer-facing labels and hide transport/model implementation details.
 - Settings retains technical diagnostics for setup and support.
 - Plant Health keeps the five-language experience while removing model/offline jargon from the customer flow.
+
+## Background live status (Android)
+
+Settings now includes an opt-in **Background live status** control. When enabled, AGRO CONNECT runs a dedicated foreground MQTT monitor with a persistent farm-status notification. The user can independently choose device status, temperature, humidity, soil moisture, water level and motor status. Plan activity alerts are separate dismissible notifications.
+
+The service uses Android `specialUse`, keeps CPU/Wi-Fi locks only while the user has explicitly enabled it, and is configured with task-removal/restart/boot recovery. See `BACKGROUND-MONITOR-NOTES.md` for the runtime design and Android platform caveats.

@@ -1,14 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:provider/provider.dart';
 
 import 'controllers/agro_controller.dart';
+import 'controllers/foreground_monitor_controller.dart';
 import 'controllers/plan_controller.dart';
 import 'core/app_theme.dart';
 import 'screens/splash_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  FlutterForegroundTask.initCommunicationPort();
+
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
@@ -23,6 +27,7 @@ void main() {
       providers: [
         ChangeNotifierProvider(create: (_) => AgroController()),
         ChangeNotifierProvider(create: (_) => PlanController()),
+        ChangeNotifierProvider(create: (_) => ForegroundMonitorController()),
       ],
       child: const AgroConnectApp(),
     ),

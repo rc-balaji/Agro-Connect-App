@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../controllers/agro_controller.dart';
 import '../controllers/plan_controller.dart';
+import '../controllers/foreground_monitor_controller.dart';
 import '../core/app_theme.dart';
 import 'control_page.dart';
 import 'history_page.dart';
@@ -52,6 +53,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<AgroController>().initialize();
       context.read<PlanController>().initialize();
+      context.read<ForegroundMonitorController>().initialize();
     });
   }
 
@@ -60,6 +62,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       context.read<AgroController>().onAppResumed();
       context.read<PlanController>().refresh();
+      context.read<ForegroundMonitorController>().refreshServiceState();
     }
   }
 
