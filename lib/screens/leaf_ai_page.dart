@@ -14,10 +14,10 @@ class LeafAiPage extends StatefulWidget {
   const LeafAiPage({super.key});
 
   @override
-  State<LeafAiPage> createState() => _LeafAiPageState();
+  State<LeafAiPage> createState() => LeafAiPageState();
 }
 
-class _LeafAiPageState extends State<LeafAiPage> with WidgetsBindingObserver {
+class LeafAiPageState extends State<LeafAiPage> with WidgetsBindingObserver {
   final PlantAiService _ai = PlantAiService();
   final ImagePicker _picker = ImagePicker();
 
@@ -30,6 +30,7 @@ class _LeafAiPageState extends State<LeafAiPage> with WidgetsBindingObserver {
   bool _cameraReady = false;
   bool _live = false;
   bool _busy = false;
+  int _analysisGeneration = 0;
   LeafLanguage _language = LeafLanguage.english;
 
   @override
@@ -162,13 +163,14 @@ class _LeafAiPageState extends State<LeafAiPage> with WidgetsBindingObserver {
     }
 
     _busy = true;
+    final generation = _analysisGeneration;
     try {
       final shot = await camera.takePicture();
       final result = await _ai.classifyFile(shot.path);
       try {
         await File(shot.path).delete();
       } catch (_) {}
-      if (!mounted || !_live) return;
+      if (!mounted || !_live || generation != _analysisGeneration) return;
       setState(() {
         _prediction = result;
         _error = null;
@@ -190,10 +192,11 @@ class _LeafAiPageState extends State<LeafAiPage> with WidgetsBindingObserver {
     if (camera == null || !camera.value.isInitialized || _busy) return;
 
     setState(() => _busy = true);
+    final generation = _analysisGeneration;
     try {
       final shot = await camera.takePicture();
       final result = await _ai.classifyFile(shot.path);
-      if (!mounted) return;
+      if (!mounted || generation != _analysisGeneration) return;
       setState(() {
         _photoPath = shot.path;
         _prediction = result;
@@ -224,9 +227,10 @@ class _LeafAiPageState extends State<LeafAiPage> with WidgetsBindingObserver {
       _photoPath = picked.path;
       _error = null;
     });
+    final generation = _analysisGeneration;
     try {
       final result = await _ai.classifyFile(picked.path);
-      if (!mounted) return;
+      if (!mounted || generation != _analysisGeneration) return;
       setState(() => _prediction = result);
     } catch (e) {
       if (mounted) {
@@ -236,6 +240,27 @@ class _LeafAiPageState extends State<LeafAiPage> with WidgetsBindingObserver {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  bool get hasActiveScan =>
+      _live || _photoPath != null || _prediction != null || _busy || _error != null;
+
+  bool resetIfNeeded() {
+    if (!hasActiveScan) return false;
+    resetScan();
+    return true;
+  }
+
+  void resetScan() {
+    _analysisGeneration++;
+    _stopLive();
+    if (!mounted) return;
+    setState(() {
+      _photoPath = null;
+      _prediction = null;
+      _error = null;
+      _busy = false;
+    });
   }
 
   @override
@@ -303,6 +328,8 @@ class _LeafAiPageState extends State<LeafAiPage> with WidgetsBindingObserver {
                 busy: _busy,
                 photoPath: _photoPath,
                 language: _language,
+                showReset: _photoPath != null || _prediction != null || _live,
+                onReset: resetScan,
               ),
               const SizedBox(height: 14),
               _ControlRow(
@@ -347,6 +374,8 @@ class _ScannerCard extends StatelessWidget {
     required this.busy,
     required this.photoPath,
     required this.language,
+    required this.showReset,
+    required this.onReset,
   });
 
   final CameraController? camera;
@@ -355,6 +384,8 @@ class _ScannerCard extends StatelessWidget {
   final bool busy;
   final String? photoPath;
   final LeafLanguage language;
+  final bool showReset;
+  final VoidCallback onReset;
 
   @override
   Widget build(BuildContext context) {
@@ -414,6 +445,27 @@ class _ScannerCard extends StatelessWidget {
                   ),
                 ),
               ),
+              if (showReset)
+                Positioned(
+                  top: 14,
+                  right: 14,
+                  child: Material(
+                    color: Colors.black.withValues(alpha: 0.45),
+                    borderRadius: BorderRadius.circular(999),
+                    child: InkWell(
+                      onTap: onReset,
+                      borderRadius: BorderRadius.circular(999),
+                      child: Padding(
+                        padding: const EdgeInsets.all(9),
+                        child: const Icon(
+                          Icons.close_rounded,
+                          size: 20,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
               Positioned(
                 left: 18,
                 right: 18,

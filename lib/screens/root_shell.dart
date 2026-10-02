@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../controllers/agro_controller.dart';
@@ -21,16 +22,9 @@ class RootShell extends StatefulWidget {
 
 class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   int _index = 0;
-
-  static const _pages = <Widget>[
-    LivePage(),
-    ControlPage(),
-    PlanPage(),
-    MonitorPage(),
-    HistoryPage(),
-    LeafAiPage(),
-    SystemPage(),
-  ];
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  final GlobalKey<LeafAiPageState> _leafAiKey = GlobalKey<LeafAiPageState>();
+  late final List<Widget> _pages;
 
   static const _labels = [
     'Home',
@@ -45,6 +39,15 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    _pages = [
+      const LivePage(),
+      const ControlPage(),
+      const PlanPage(),
+      const MonitorPage(),
+      const HistoryPage(),
+      LeafAiPage(key: _leafAiKey),
+      const SystemPage(),
+    ];
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<AgroController>().initialize();
@@ -71,9 +74,54 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
     if (_index != value) setState(() => _index = value);
   }
 
+  Future<void> _handleBack() async {
+    if (_scaffoldKey.currentState?.isDrawerOpen ?? false) {
+      Navigator.of(context).pop();
+      return;
+    }
+
+    if (_index == 5 && (_leafAiKey.currentState?.resetIfNeeded() ?? false)) {
+      return;
+    }
+
+    if (_index != 0) {
+      setState(() => _index = 0);
+      return;
+    }
+
+    final shouldExit = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('Exit AGRO CONNECT?'),
+            content: const Text('Are you sure you want to close the app?'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: const Text('Stay'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: const Text('Exit'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+
+    if (shouldExit) {
+      await SystemNavigator.pop();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) _handleBack();
+      },
+      child: Scaffold(
+        key: _scaffoldKey,
       drawer: _AgroDrawer(
         selectedIndex: _index,
         onSelectPage: _selectPage,
@@ -84,6 +132,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
             Builder(
               builder: (context) => _ShellHeader(
                 title: _labels[_index],
+                showAiTag: _index == 5,
                 onMenu: () => Scaffold.of(context).openDrawer(),
               ),
             ),
@@ -130,15 +179,21 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
           ],
         ),
       ),
+      ),
     );
   }
 }
 
 class _ShellHeader extends StatelessWidget {
-  const _ShellHeader({required this.title, required this.onMenu});
+  const _ShellHeader({
+    required this.title,
+    required this.onMenu,
+    this.showAiTag = false,
+  });
 
   final String title;
   final VoidCallback onMenu;
+  final bool showAiTag;
 
   @override
   Widget build(BuildContext context) {
@@ -179,13 +234,24 @@ class _ShellHeader extends StatelessWidget {
                     fontSize: 14,
                   ),
                 ),
-                Text(
-                  title,
-                  style: const TextStyle(
-                    color: AppTheme.muted,
-                    fontSize: 10.5,
-                    fontWeight: FontWeight.w600,
-                  ),
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        title,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: AppTheme.muted,
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    if (showAiTag) ...[
+                      const SizedBox(width: 6),
+                      const _MiniAiTag(),
+                    ],
+                  ],
                 ),
               ],
             ),
@@ -212,6 +278,32 @@ class _ShellHeader extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+
+class _MiniAiTag extends StatelessWidget {
+  const _MiniAiTag();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: AppTheme.emerald.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: AppTheme.emerald.withValues(alpha: 0.28)),
+      ),
+      child: const Text(
+        'AI',
+        style: TextStyle(
+          color: AppTheme.emeraldSoft,
+          fontSize: 8.5,
+          fontWeight: FontWeight.w900,
+          letterSpacing: 0.3,
+        ),
       ),
     );
   }
@@ -306,11 +398,19 @@ class _AgroDrawer extends StatelessWidget {
                           fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
                         ),
                       ),
-                      trailing: selected
-                          ? const Icon(
-                              Icons.chevron_right_rounded,
-                              color: AppTheme.emeraldSoft,
-                              size: 20,
+                      trailing: (index == 5 || selected)
+                          ? Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (index == 5) const _MiniAiTag(),
+                                if (index == 5 && selected) const SizedBox(width: 6),
+                                if (selected)
+                                  const Icon(
+                                    Icons.chevron_right_rounded,
+                                    color: AppTheme.emeraldSoft,
+                                    size: 20,
+                                  ),
+                              ],
                             )
                           : null,
                       onTap: () => onSelectPage(index),
