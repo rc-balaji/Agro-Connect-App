@@ -46,8 +46,8 @@ class MotorCard extends StatelessWidget {
                   const SizedBox(height: 4),
                   Text(
                     pending
-                        ? 'Applying command…'
-                        : 'Hardware ${actualOn ? 'ON' : 'OFF'} · Desired ${desiredOn ? 'ON' : 'OFF'}',
+                        ? 'Updating…'
+                        : (actualOn ? 'Running' : 'Stopped'),
                     style: TextStyle(
                       color: pending ? AppTheme.amber : AppTheme.muted,
                       fontSize: 12,

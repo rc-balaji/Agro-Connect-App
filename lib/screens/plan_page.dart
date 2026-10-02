@@ -137,7 +137,7 @@ class _PlanPageState extends State<PlanPage> {
           const SizedBox(height: 8),
           _SectionTitle(
             title: 'All Motor $_motor plans',
-            subtitle: 'Server-saved plans · IST · manual control remains independent',
+            subtitle: 'Upcoming schedules',
             icon: Icons.event_repeat_rounded,
           ),
           const SizedBox(height: 10),
@@ -215,7 +215,7 @@ class _PlanPageState extends State<PlanPage> {
     _showResult(
       context,
       ok: ok,
-      success: existing == null ? 'Plan created and armed' : 'Plan updated and re-armed',
+      success: existing == null ? 'Plan created' : 'Plan updated',
       error: controller.error,
     );
   }
@@ -249,7 +249,7 @@ class _PlanPageState extends State<PlanPage> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete plan?'),
-        content: Text('${plan.title}\n\nThis removes its future server schedule.'),
+        content: Text('${plan.title}\n\nThis removes its future runs.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
           FilledButton.tonal(
@@ -325,7 +325,7 @@ class _Header extends StatelessWidget {
                   Text('Plan', style: Theme.of(context).textTheme.titleLarge),
                   const SizedBox(height: 3),
                   const Text(
-                    'Server-side motor schedules in IST',
+                    'Set motor schedules',
                     style: TextStyle(color: AppTheme.muted, fontSize: 12),
                   ),
                 ],
@@ -349,12 +349,12 @@ class _Header extends StatelessWidget {
           children: [
             _StatusBadge(
               ready: ready,
-              text: ready ? 'Scheduler ready' : 'Scheduler unavailable',
+              text: ready ? 'Ready' : 'Unavailable',
             ),
             const SizedBox(width: 8),
             const _InfoBadge(icon: Icons.schedule_rounded, text: 'IST'),
             const SizedBox(width: 8),
-            const _InfoBadge(icon: Icons.timer_outlined, text: 'Seconds'),
+            const _InfoBadge(icon: Icons.timer_outlined, text: 'Exact time'),
           ],
         ),
       ],
@@ -1162,7 +1162,7 @@ class _PlanEditorSheetState extends State<PlanEditorSheet> {
                     children: [
                       Text(widget.existing == null ? 'Create motor plan' : 'Edit motor plan', style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 18)),
                       const SizedBox(height: 3),
-                      const Text('Asia/Kolkata (IST) · second-level time', style: TextStyle(color: AppTheme.muted, fontSize: 11)),
+                      const Text('India time (IST)', style: TextStyle(color: AppTheme.muted, fontSize: 11)),
                     ],
                   ),
                 ),
@@ -1223,7 +1223,7 @@ class _PlanEditorSheetState extends State<PlanEditorSheet> {
                 Row(
                   children: [
                     const Expanded(
-                      child: Text('Seconds are stored exactly on the server.', style: TextStyle(color: AppTheme.muted, fontSize: 10.5)),
+                      child: Text('Set exact seconds.', style: TextStyle(color: AppTheme.muted, fontSize: 10.5)),
                     ),
                     SizedBox(
                       width: 84,
@@ -1325,7 +1325,7 @@ class _PlanEditorSheetState extends State<PlanEditorSheet> {
                 width: double.infinity,
                 child: FilledButton.icon(
                   onPressed: _save,
-                  icon: const Icon(Icons.cloud_done_rounded),
+                  icon: const Icon(Icons.check_rounded),
                   label: Text(widget.existing == null ? 'Save plan' : 'Update plan'),
                   style: FilledButton.styleFrom(
                     backgroundColor: AppTheme.emerald,
@@ -1827,13 +1827,13 @@ String _schedulerText(SchedulePlan plan) {
   if (plan.expired) return 'Expired';
   switch (plan.schedulerStatus) {
     case 'armed':
-      return 'Armed';
+      return 'Scheduled';
     case 'sync_failed':
-      return 'Sync issue';
+      return 'Needs attention';
     case 'syncing':
-      return 'Syncing';
+      return 'Updating';
     default:
-      return plan.schedulerStatus ?? 'Saved';
+      return 'Saved';
   }
 }
 

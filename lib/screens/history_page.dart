@@ -34,7 +34,7 @@ class _HistoryPageState extends State<HistoryPage> {
                 children: [
                   Text('History', style: Theme.of(context).textTheme.headlineSmall),
                   const SizedBox(height: 4),
-                  Text('${history.length} locally cached readings', style: const TextStyle(color: AppTheme.muted)),
+                  Text('${history.length} readings', style: const TextStyle(color: AppTheme.muted)),
                 ],
               ),
             ),
@@ -47,7 +47,7 @@ class _HistoryPageState extends State<HistoryPage> {
                         context: context,
                         builder: (context) => AlertDialog(
                           title: const Text('Clear history?'),
-                          content: const Text('This removes locally cached telemetry from this phone.'),
+                          content: const Text('This removes saved history from this phone.'),
                           actions: [
                             TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
                             FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Clear')),
@@ -84,7 +84,7 @@ class _HistoryPageState extends State<HistoryPage> {
             child: SizedBox(
               height: 260,
               child: visible.length < 2
-                  ? const Center(child: Text('Waiting for enough telemetry to draw history…', style: TextStyle(color: AppTheme.muted)))
+                  ? const Center(child: Text('Waiting for more data…', style: TextStyle(color: AppTheme.muted)))
                   : LineChart(
                       LineChartData(
                         minX: 0,

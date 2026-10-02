@@ -20,8 +20,8 @@ class ControlPage extends StatelessWidget {
       children: [
         const _PageHeader(
           icon: Icons.tune_rounded,
-          title: 'Control Center',
-          subtitle: 'Hardware-confirmed motor commands over MQTT',
+          title: 'Motors',
+          subtitle: 'Manual motor control',
         ),
         const SizedBox(height: 14),
         Card(
@@ -43,9 +43,9 @@ class ControlPage extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Automatic Soil Output', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+                      Text('Automatic Irrigation', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
                       SizedBox(height: 4),
-                      Text('Controlled locally by ESP32 soil thresholds', style: TextStyle(color: AppTheme.muted, fontSize: 12)),
+                      Text('Based on soil moisture', style: TextStyle(color: AppTheme.muted, fontSize: 12)),
                     ],
                   ),
                 ),
@@ -102,8 +102,8 @@ class ControlPage extends StatelessWidget {
                 Expanded(
                   child: Text(
                     enabled
-                        ? 'Controls are live. Every command waits for ESP32 ACK before completion.'
-                        : 'Remote motor controls are disabled until the ESP32 is online and MQTT is connected.',
+                        ? 'Ready to control'
+                        : 'Controls unavailable. Check the connection.',
                     style: const TextStyle(color: AppTheme.muted, height: 1.4),
                   ),
                 ),
@@ -111,22 +111,6 @@ class ControlPage extends StatelessWidget {
             ),
           ),
         ),
-        if (c.lastRoundTripMs != null) ...[
-          const SizedBox(height: 12),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(18),
-              child: Row(
-                children: [
-                  const Icon(Icons.speed_rounded, color: AppTheme.cyan),
-                  const SizedBox(width: 12),
-                  const Expanded(child: Text('Last hardware round trip', style: TextStyle(fontWeight: FontWeight.w700))),
-                  Text('${c.lastRoundTripMs} ms', style: const TextStyle(color: AppTheme.cyan, fontWeight: FontWeight.w900)),
-                ],
-              ),
-            ),
-          ),
-        ],
       ],
     );
   }

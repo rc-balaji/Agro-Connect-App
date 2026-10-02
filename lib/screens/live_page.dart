@@ -3,7 +3,6 @@ import 'package:provider/provider.dart';
 
 import '../controllers/agro_controller.dart';
 import '../core/app_theme.dart';
-import '../core/mqtt_config.dart';
 import '../widgets/sensor_card.dart';
 import '../widgets/status_pill.dart';
 
@@ -46,7 +45,7 @@ class LivePage extends StatelessWidget {
                           unit: '°C',
                           icon: Icons.thermostat_rounded,
                           color: const Color(0xFFFF8C92),
-                          subtitle: 'DHT22 · live MQTT',
+                          subtitle: 'Air temperature',
                           points: temperature,
                         ),
                       ),
@@ -58,7 +57,7 @@ class LivePage extends StatelessWidget {
                           unit: '%',
                           icon: Icons.water_drop_outlined,
                           color: AppTheme.cyan,
-                          subtitle: 'DHT22 · live MQTT',
+                          subtitle: 'Air humidity',
                           points: humidity,
                         ),
                       ),
@@ -70,7 +69,7 @@ class LivePage extends StatelessWidget {
                           unit: '%',
                           icon: Icons.eco_rounded,
                           color: AppTheme.emerald,
-                          subtitle: 'GPIO34 · automatic LED1',
+                          subtitle: 'Current soil level',
                           points: soil,
                         ),
                       ),
@@ -82,7 +81,7 @@ class LivePage extends StatelessWidget {
                           unit: '%',
                           icon: Icons.waves_rounded,
                           color: const Color(0xFF5EB6FF),
-                          subtitle: 'HC-SR04 · tank level',
+                          subtitle: 'Current tank level',
                           points: water,
                         ),
                       ),
@@ -138,7 +137,7 @@ class _Hero extends StatelessWidget {
   Widget build(BuildContext context) {
     final age = controller.packetAge;
     final ageText = age == null
-        ? 'No packet yet'
+        ? 'Waiting'
         : age.inSeconds < 1
             ? 'Live now'
             : '${age.inSeconds}s ago';
@@ -173,9 +172,9 @@ class _Hero extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('AGRO CONNECT', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, letterSpacing: -0.5)),
+                    Text('Farm Overview', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, letterSpacing: -0.5)),
                     SizedBox(height: 3),
-                    Text('Realtime smart farming stream', style: TextStyle(color: AppTheme.muted, fontSize: 12)),
+                    Text('Live field conditions', style: TextStyle(color: AppTheme.muted, fontSize: 12)),
                   ],
                 ),
               ),
@@ -186,7 +185,7 @@ class _Hero extends StatelessWidget {
                   borderRadius: BorderRadius.circular(20),
                   border: Border.all(color: AppTheme.emerald.withValues(alpha: 0.2)),
                 ),
-                child: const Text('MQTT LIVE', style: TextStyle(color: AppTheme.emeraldSoft, fontWeight: FontWeight.w800, fontSize: 10)),
+                child: const Text('LIVE', style: TextStyle(color: AppTheme.emeraldSoft, fontWeight: FontWeight.w800, fontSize: 10)),
               ),
             ],
           ),
@@ -195,7 +194,7 @@ class _Hero extends StatelessWidget {
             spacing: 8,
             runSpacing: 8,
             children: [
-              StatusPill(label: 'ESP32', active: controller.deviceOnline),
+              StatusPill(label: 'Farm device', active: controller.deviceOnline),
               StatusPill(
                 label: 'Internet',
                 active: controller.internetReachable,
@@ -203,19 +202,16 @@ class _Hero extends StatelessWidget {
                 activeText: controller.network.label,
                 inactiveText: controller.network.label,
               ),
-              StatusPill(label: 'MQTT', active: controller.mqttConnected, activeText: 'Connected', inactiveText: 'Disconnected'),
             ],
           ),
           const SizedBox(height: 16),
           Row(
             children: [
-              const _MiniInfo(label: 'Device', value: MqttConfig.deviceId),
-              const SizedBox(width: 10),
-              _MiniInfo(label: 'Last packet', value: ageText),
+              _MiniInfo(label: 'Last update', value: ageText),
               const SizedBox(width: 10),
               _MiniInfo(
-                label: 'Command RTT',
-                value: controller.controls.lastRoundTripMs == null ? '--' : '${controller.controls.lastRoundTripMs} ms',
+                label: 'Connection',
+                value: controller.deviceOnline ? 'Active' : 'Waiting',
               ),
             ],
           ),

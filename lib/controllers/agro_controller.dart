@@ -80,9 +80,9 @@ class AgroController extends ChangeNotifier {
   }
 
   String get farmHealthText {
-    if (!deviceOnline) return 'Waiting for live device telemetry';
+    if (!deviceOnline) return 'Waiting for farm data';
     if (_telemetry.waterLevel < 15) return 'Water tank is critically low';
-    if (_telemetry.soil < 30) return 'Soil is dry — automatic irrigation output is active';
+    if (_telemetry.soil < 30) return 'Soil is dry — irrigation is running';
     if (_telemetry.soil < 45) return 'Soil moisture is slightly low';
     if (_telemetry.temperature > 38) return 'Field temperature is high';
     return 'Field conditions are stable';
@@ -144,7 +144,8 @@ class AgroController extends ChangeNotifier {
       _error = null;
     } catch (error) {
       _mqttConnected = false;
-      _error = 'MQTT connection failed: $error';
+      debugPrint('Connection failed: $error');
+      _error = 'Connection failed. Try again.';
     } finally {
       _connectInProgress = false;
     }
@@ -160,7 +161,8 @@ class AgroController extends ChangeNotifier {
       await _mqtt.reconnect();
       _mqttConnected = _mqtt.isConnected;
     } catch (error) {
-      _error = 'Reconnect failed: $error';
+      debugPrint('Reconnect failed: $error');
+      _error = 'Connection failed. Try again.';
     }
 
     notifyListeners();
@@ -267,13 +269,13 @@ class AgroController extends ChangeNotifier {
 
   Future<void> setMotor(int motor, bool value) async {
     if (!_mqttConnected) {
-      _error = 'MQTT broker is disconnected';
+      _error = 'Connection unavailable. Try again.';
       notifyListeners();
       return;
     }
 
     if (!deviceOnline) {
-      _error = 'ESP32 is offline. Start the device before sending motor commands.';
+      _error = 'Farm device is offline.';
       notifyListeners();
       return;
     }
@@ -314,7 +316,7 @@ class AgroController extends ChangeNotifier {
     _commandTimeouts[commandId] = Timer(MqttConfig.commandTimeout, () {
       if (_commandSentMicros.remove(commandId) != null) {
         _controls = _controls.copyWith(clearPending: true);
-        _error = 'ESP32 command acknowledgement timed out';
+        _error = 'Motor did not respond. Try again.';
         notifyListeners();
       }
     });
@@ -334,7 +336,8 @@ class AgroController extends ChangeNotifier {
       _commandSentMicros.remove(commandId);
       _commandTimeouts.remove(commandId)?.cancel();
       _controls = _controls.copyWith(clearPending: true);
-      _error = 'Command publish failed: $error';
+      debugPrint('Motor command failed: $error');
+      _error = 'Could not update the motor. Try again.';
       notifyListeners();
     }
   }

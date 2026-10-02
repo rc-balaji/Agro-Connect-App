@@ -209,3 +209,11 @@ python3 tool/patch_android_jvm.py
 flutter pub get
 flutter build apk --release
 ```
+
+
+## Customer UI refresh
+
+- Bottom navigation removed; all sections now live in the side menu.
+- End-user screens use customer-facing labels and hide transport/model implementation details.
+- Settings retains technical diagnostics for setup and support.
+- Plant Health keeps the five-language experience while removing model/offline jargon from the customer flow.

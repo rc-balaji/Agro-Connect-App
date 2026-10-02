@@ -65,7 +65,8 @@ class _LeafAiPageState extends State<LeafAiPage> with WidgetsBindingObserver {
       if (mounted) setState(() => _modelReady = true);
     } catch (e) {
       if (mounted) {
-        setState(() => _error = '${LeafText.ui(_language, 'modelError')}\n$e');
+        debugPrint('Plant scan init failed: $e');
+        setState(() => _error = LeafText.ui(_language, 'modelError'));
       }
     }
 
@@ -111,7 +112,8 @@ class _LeafAiPageState extends State<LeafAiPage> with WidgetsBindingObserver {
       if (mounted) {
         setState(() {
           _cameraReady = false;
-          _error ??= '${LeafText.ui(_language, 'cameraError')}\n$e';
+          debugPrint('Camera init failed: $e');
+          _error ??= LeafText.ui(_language, 'cameraError');
         });
       }
     }
@@ -172,7 +174,10 @@ class _LeafAiPageState extends State<LeafAiPage> with WidgetsBindingObserver {
         _error = null;
       });
     } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
+      if (mounted) {
+        debugPrint('Plant scan failed: $e');
+        setState(() => _error = LeafText.ui(_language, 'scanError'));
+      }
     } finally {
       _busy = false;
     }
@@ -195,7 +200,10 @@ class _LeafAiPageState extends State<LeafAiPage> with WidgetsBindingObserver {
         _error = null;
       });
     } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
+      if (mounted) {
+        debugPrint('Plant scan failed: $e');
+        setState(() => _error = LeafText.ui(_language, 'scanError'));
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -221,7 +229,10 @@ class _LeafAiPageState extends State<LeafAiPage> with WidgetsBindingObserver {
       if (!mounted) return;
       setState(() => _prediction = result);
     } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
+      if (mounted) {
+        debugPrint('Plant scan failed: $e');
+        setState(() => _error = LeafText.ui(_language, 'scanError'));
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -249,152 +260,81 @@ class _LeafAiPageState extends State<LeafAiPage> with WidgetsBindingObserver {
         ? null
         : PlantKnowledge.forLabel(prediction.label, _language);
 
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: AppTheme.background,
-        surfaceTintColor: Colors.transparent,
-        titleSpacing: 0,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              LeafText.ui(_language, 'title'),
-              style: const TextStyle(fontWeight: FontWeight.w900),
-            ),
-            Text(
-              LeafText.ui(_language, 'subtitle'),
-              style: const TextStyle(fontSize: 11, color: AppTheme.muted),
-            ),
-          ],
-        ),
-        actions: [
-          PopupMenuButton<LeafLanguage>(
-            tooltip: LeafText.ui(_language, 'language'),
-            initialValue: _language,
-            onSelected: _setLanguage,
-            itemBuilder: (context) => LeafLanguage.values
-                .map(
-                  (language) => PopupMenuItem(
-                    value: language,
-                    child: Text(language.nativeName),
-                  ),
-                )
-                .toList(growable: false),
-            icon: const Icon(Icons.translate_rounded),
-          ),
-          const SizedBox(width: 6),
-        ],
-      ),
-      body: SafeArea(
-        top: false,
-        child: CustomScrollView(
-          physics: const BouncingScrollPhysics(),
-          slivers: [
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(16, 14, 16, 28),
-              sliver: SliverList.list(
+    return CustomScrollView(
+      physics: const BouncingScrollPhysics(),
+      slivers: [
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 28),
+          sliver: SliverList.list(
+            children: [
+              Row(
                 children: [
-                  _StatusStrip(
-                    modelReady: _modelReady,
-                    language: _language,
-                  ),
-                  const SizedBox(height: 14),
-                  _ScannerCard(
-                    camera: _camera,
-                    cameraReady: _cameraReady,
-                    live: _live,
-                    busy: _busy,
-                    photoPath: _photoPath,
-                    language: _language,
-                  ),
-                  const SizedBox(height: 14),
-                  _ControlRow(
-                    live: _live,
-                    canScan: _modelReady && _cameraReady && !_busy,
-                    onLive: _live ? _stopLive : _startLive,
-                    onCapture: _captureStill,
-                    onGallery: _pickPhoto,
-                    language: _language,
-                  ),
-                  if (_error != null) ...[
-                    const SizedBox(height: 14),
-                    _ErrorCard(message: _error!),
-                  ],
-                  if (_busy) ...[
-                    const SizedBox(height: 14),
-                    _BusyCard(language: _language),
-                  ],
-                  const SizedBox(height: 14),
-                  if (prediction == null || advice == null)
-                    _EmptyResult(language: _language)
-                  else
-                    _DiagnosisCard(
-                      prediction: prediction,
-                      advice: advice,
-                      language: _language,
-                      confidenceLabel: _confidenceLabel(prediction.confidence),
+                  Expanded(
+                    child: Text(
+                      LeafText.ui(_language, 'subtitle'),
+                      style: const TextStyle(
+                        color: AppTheme.muted,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
+                  ),
+                  PopupMenuButton<LeafLanguage>(
+                    tooltip: LeafText.ui(_language, 'language'),
+                    initialValue: _language,
+                    onSelected: _setLanguage,
+                    itemBuilder: (context) => LeafLanguage.values
+                        .map(
+                          (language) => PopupMenuItem(
+                            value: language,
+                            child: Text(language.nativeName),
+                          ),
+                        )
+                        .toList(growable: false),
+                    icon: const Icon(Icons.translate_rounded),
+                  ),
                 ],
               ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _StatusStrip extends StatelessWidget {
-  const _StatusStrip({required this.modelReady, required this.language});
-
-  final bool modelReady;
-  final LeafLanguage language;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: AppTheme.border),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 38,
-            height: 38,
-            decoration: BoxDecoration(
-              color: AppTheme.emerald.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: const Icon(Icons.psychology_alt_rounded, color: AppTheme.emerald),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  modelReady
-                      ? LeafText.ui(language, 'ready')
-                      : LeafText.ui(language, 'loading'),
-                  style: const TextStyle(fontWeight: FontWeight.w800),
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  LeafText.ui(language, 'offline'),
-                  style: const TextStyle(color: AppTheme.muted, fontSize: 11),
-                ),
+              const SizedBox(height: 10),
+              _ScannerCard(
+                camera: _camera,
+                cameraReady: _cameraReady,
+                live: _live,
+                busy: _busy,
+                photoPath: _photoPath,
+                language: _language,
+              ),
+              const SizedBox(height: 14),
+              _ControlRow(
+                live: _live,
+                canScan: _modelReady && _cameraReady && !_busy,
+                onLive: _live ? _stopLive : _startLive,
+                onCapture: _captureStill,
+                onGallery: _pickPhoto,
+                language: _language,
+              ),
+              if (_error != null) ...[
+                const SizedBox(height: 14),
+                _ErrorCard(message: _error!),
               ],
-            ),
+              if (_busy) ...[
+                const SizedBox(height: 14),
+                _BusyCard(language: _language),
+              ],
+              const SizedBox(height: 14),
+              if (prediction == null || advice == null)
+                _EmptyResult(language: _language)
+              else
+                _DiagnosisCard(
+                  prediction: prediction,
+                  advice: advice,
+                  language: _language,
+                  confidenceLabel: _confidenceLabel(prediction.confidence),
+                ),
+            ],
           ),
-          Icon(
-            modelReady ? Icons.offline_bolt_rounded : Icons.hourglass_top_rounded,
-            color: modelReady ? AppTheme.emeraldSoft : AppTheme.amber,
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

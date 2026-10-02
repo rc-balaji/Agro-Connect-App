@@ -127,7 +127,7 @@ class ScheduleService {
       throw ScheduleApiException(
         message?.isNotEmpty == true
             ? message!
-            : 'Server request failed (${response.statusCode})',
+            : 'Could not complete the request. Try again.',
         statusCode: response.statusCode,
       );
     }
