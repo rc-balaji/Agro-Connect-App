@@ -620,12 +620,19 @@ class _CalendarCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 5),
-            const Row(
+            Row(
               children: [
-                for (final day in ['S', 'M', 'T', 'W', 'T', 'F', 'S'])
+                for (final day in const ['S', 'M', 'T', 'W', 'T', 'F', 'S'])
                   Expanded(
                     child: Center(
-                      child: Text(day, style: TextStyle(color: AppTheme.muted, fontWeight: FontWeight.w800, fontSize: 10.5)),
+                      child: Text(
+                        day,
+                        style: const TextStyle(
+                          color: AppTheme.muted,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 10.5,
+                        ),
+                      ),
                     ),
                   ),
               ],
