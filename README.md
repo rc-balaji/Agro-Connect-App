@@ -195,3 +195,17 @@ before analyze/test/build, replacing the placeholder with the actual ~3 MB quant
 ### Android
 
 Camera permission is already included. The workflow forces Android minSdk 24 for the current camera/image-picker plugin line.
+
+
+## Android JVM compatibility fix
+
+The Android build pipeline now runs `python3 tool/patch_android_jvm.py` after generating the Flutter Android scaffold. It aligns Java and Kotlin plugin bytecode targets to JVM 17, including `tflite_flutter`, preventing the Gradle error where Java compiled at 11 while Kotlin compiled at 17.
+
+For a local fresh Android scaffold, run:
+
+```bash
+flutter create --platforms=android --org com.agroconnect --project-name agro_connect .
+python3 tool/patch_android_jvm.py
+flutter pub get
+flutter build apk --release
+```

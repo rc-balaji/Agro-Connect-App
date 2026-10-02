@@ -49,6 +49,9 @@ jobs:
               candidate.write_text(text)
           PY
 
+      - name: Align Android Java/Kotlin JVM targets
+        run: python3 tool/patch_android_jvm.py
+
       - name: Install packages
         run: flutter pub get
 
