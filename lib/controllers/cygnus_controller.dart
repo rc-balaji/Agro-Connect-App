@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
@@ -35,8 +36,8 @@ class CygnusController extends ChangeNotifier {
 
   final List<CygnusMessage> _messages = <CygnusMessage>[];
   final List<CygnusSessionSummary> _sessions = <CygnusSessionSummary>[];
-  final List<CygnusQueuedInstruction> _instructionQueue =
-      <CygnusQueuedInstruction>[];
+  final LinkedList<_CygnusInstructionEntry> _instructionQueue =
+      LinkedList<_CygnusInstructionEntry>();
   Future<void> _queuePersistenceTail = Future<void>.value();
 
   bool _initialized = false;
@@ -72,15 +73,35 @@ class CygnusController extends ChangeNotifier {
   List<CygnusSessionSummary> get sessions => List.unmodifiable(_sessions);
   bool get initialized => _initialized;
   bool get busy => _busy;
+  CygnusQueuedInstruction? get _firstQueuedInstruction =>
+      _instructionQueue.isEmpty ? null : _instructionQueue.first.instruction;
+  List<CygnusQueuedInstruction> get _instructionSnapshot => _instructionQueue
+      .map((entry) => entry.instruction)
+      .toList(growable: false);
+
+  void _replaceInstructionQueue(
+    Iterable<CygnusQueuedInstruction> instructions,
+  ) {
+    _instructionQueue.clear();
+    for (final instruction in instructions) {
+      _instructionQueue.add(_CygnusInstructionEntry(instruction));
+    }
+  }
+
+  void _replaceFirstInstruction(CygnusQueuedInstruction instruction) {
+    _instructionQueue.first.unlink();
+    _instructionQueue.addFirst(_CygnusInstructionEntry(instruction));
+  }
+
   String? get _blockedInstructionId =>
       _activeInstruction?.id ?? _pendingRetry?.instruction?.id;
   int get queuedInstructionCount => _instructionQueue
-      .where((instruction) => instruction.id != _blockedInstructionId)
+      .where((entry) => entry.instruction.id != _blockedInstructionId)
       .length;
   List<String> get queuedInstructions => List.unmodifiable(
     _instructionQueue
-        .where((instruction) => instruction.id != _blockedInstructionId)
-        .map((instruction) => instruction.text),
+        .where((entry) => entry.instruction.id != _blockedInstructionId)
+        .map((entry) => entry.instruction.text),
   );
   String? get activeInstruction => _activeInstruction?.text;
   int get completedInstructionCount => _completedInstructionCount;
@@ -95,6 +116,10 @@ class CygnusController extends ChangeNotifier {
   bool get restoringQueue => _restoringQueue;
   bool get processingInstructionQueue => _processingQueue;
   String? get pendingRetryInstruction => _pendingRetry?.instruction?.text;
+  bool get awaitingClarification =>
+      _firstQueuedInstruction?.awaitingClarification ?? false;
+  String? get clarificationQuestion =>
+      _firstQueuedInstruction?.clarificationQuestion;
   bool get renderingReply => _renderingReply;
   bool get loadingSession => _loadingSession;
   bool get voiceReply => _voiceReply;
@@ -168,7 +193,7 @@ class CygnusController extends ChangeNotifier {
 
   Future<void> _restoreInstructionQueue() async {
     if (_instructionQueue.isEmpty) return;
-    for (final instruction in _instructionQueue) {
+    for (final instruction in _instructionSnapshot) {
       final alreadyShown = _messages.any(
         (message) => message.payload['instructionId'] == instruction.id,
       );
@@ -177,16 +202,38 @@ class CygnusController extends ChangeNotifier {
           _userMessage(instruction.text, instructionId: instruction.id),
         );
       }
+      for (final answer in instruction.clarificationAnswers) {
+        final answerAlreadyShown = _messages.any(
+          (message) =>
+              message.role == 'user' &&
+              message.payload['instructionId'] == instruction.id &&
+              message.text == answer,
+        );
+        if (!answerAlreadyShown) {
+          await _append(_userMessage(answer, instructionId: instruction.id));
+        }
+      }
     }
-    _activeInstruction = _instructionQueue.first.started
-        ? _instructionQueue.first
-        : null;
+    final first = _firstQueuedInstruction!;
+    _activeInstruction = first.started ? first : null;
     _restoringQueue = true;
-    _activeInstructionHadSideEffect = _instructionQueue.first.started;
+    _activeInstructionHadSideEffect = first.started;
+    if (first.awaitingClarification) {
+      final question = first.clarificationQuestion;
+      if (question != null &&
+          !_messages.any(
+            (message) =>
+                message.role == 'assistant' && message.text.trim() == question,
+          )) {
+        await _append(_assistantMessage(question));
+      }
+      _restoringQueue = false;
+      return;
+    }
     try {
       await _offerInstructionRetry(
-        _instructionQueue.first,
-        _instructionQueue.first.started
+        first,
+        first.started
             ? 'The app was interrupted while this instruction was running. Check the motor or schedule state before retrying.'
             : 'This instruction was saved but had not started before the app closed.',
       );
@@ -211,9 +258,7 @@ class CygnusController extends ChangeNotifier {
       _messages
         ..clear()
         ..addAll(await _store.loadMessages(id));
-      _instructionQueue
-        ..clear()
-        ..addAll(await _store.loadInstructionQueue(id));
+      _replaceInstructionQueue(await _store.loadInstructionQueue(id));
       _activeInstruction = null;
       _completedInstructionCount = 0;
       _skippedInstructionCount = 0;
@@ -305,6 +350,14 @@ class CygnusController extends ChangeNotifier {
       await dismissFailedInstruction();
       return;
     }
+    if (awaitingClarification) {
+      if (decision == CygnusDecision.skip) {
+        await _skipClarification();
+        return;
+      }
+      await _answerInstructionClarification(text, fromVoice: fromVoice);
+      return;
+    }
 
     final instructions = splitCygnusInstructions(text);
     if (instructions.isEmpty) return;
@@ -315,10 +368,12 @@ class CygnusController extends ChangeNotifier {
     }
     for (final instruction in instructions) {
       _instructionQueue.add(
-        CygnusQueuedInstruction(
-          id: _id('instruction'),
-          text: instruction,
-          fromVoice: fromVoice,
+        _CygnusInstructionEntry(
+          CygnusQueuedInstruction(
+            id: _id('instruction'),
+            text: instruction,
+            fromVoice: fromVoice,
+          ),
         ),
       );
     }
@@ -336,6 +391,60 @@ class CygnusController extends ChangeNotifier {
     await _drainInstructionQueue();
   }
 
+  Future<void> _answerInstructionClarification(
+    String answer, {
+    required bool fromVoice,
+  }) async {
+    final current = _firstQueuedInstruction;
+    if (current == null || !current.awaitingClarification) return;
+    final resumed = current.copyWith(
+      fromVoice: current.fromVoice || fromVoice,
+      awaitingClarification: false,
+      clearClarificationQuestion: true,
+      clarificationAnswers: [...current.clarificationAnswers, answer],
+    );
+    _replaceFirstInstruction(resumed);
+    _activeInstruction = resumed;
+    try {
+      await _persistInstructionQueue();
+    } catch (error, stack) {
+      debugPrint('Could not save clarification response state: $error\n$stack');
+      _replaceFirstInstruction(current);
+      _activeInstruction = current;
+      _error =
+          'Could not save your clarification. The instruction is still waiting; please try again.';
+      await _append(_assistantMessage(_error!));
+      return;
+    }
+    await _append(_userMessage(answer, instructionId: current.id));
+    notifyListeners();
+    await _drainInstructionQueue();
+  }
+
+  Future<void> _skipClarification() async {
+    final instruction = _firstQueuedInstruction;
+    if (instruction == null) return;
+    _activeInstruction ??= instruction;
+    try {
+      await _completeActiveInstruction(skipped: true);
+      await _append(
+        _assistantMessage(
+          'Skipped that instruction. Continuing with the next queued item.',
+        ),
+      );
+    } catch (error, stack) {
+      debugPrint(
+        'Could not skip instruction awaiting clarification: $error\n$stack',
+      );
+      _error =
+          'Could not save the queue update. This instruction is still waiting.';
+      await _append(_assistantMessage(_error!));
+      return;
+    }
+    notifyListeners();
+    await _drainInstructionQueue();
+  }
+
   Future<void> _persistInstructionQueue([
     List<CygnusQueuedInstruction>? instructions,
   ]) async {
@@ -346,7 +455,7 @@ class CygnusController extends ChangeNotifier {
       );
     }
     final snapshot = List<CygnusQueuedInstruction>.of(
-      instructions ?? _instructionQueue,
+      instructions ?? _instructionSnapshot,
     );
     final write = _queuePersistenceTail
         .catchError((Object error) {
@@ -355,6 +464,16 @@ class CygnusController extends ChangeNotifier {
         .then((_) => _store.saveInstructionQueue(id, snapshot));
     _queuePersistenceTail = write;
     await write;
+  }
+
+  String _instructionPromptText(CygnusQueuedInstruction instruction) {
+    if (instruction.clarificationAnswers.isEmpty) return instruction.text;
+    return [
+      instruction.text,
+      ...instruction.clarificationAnswers.map(
+        (answer) => 'Clarification: $answer',
+      ),
+    ].join('\n');
   }
 
   Future<void> _drainInstructionQueue() async {
@@ -373,17 +492,18 @@ class CygnusController extends ChangeNotifier {
       while (_instructionQueue.isNotEmpty &&
           _pendingAction == null &&
           _pendingRetry == null &&
+          !_firstQueuedInstruction!.awaitingClarification &&
           !_disposed) {
-        final instruction = _instructionQueue.first;
+        final instruction = _firstQueuedInstruction!;
         _activeInstruction = instruction.copyWith(started: true);
-        _instructionQueue[0] = _activeInstruction!;
+        _replaceFirstInstruction(_activeInstruction!);
         try {
           await _persistInstructionQueue();
         } catch (error, stack) {
           debugPrint(
             'Could not mark queued instruction as active: $error\n$stack',
           );
-          _instructionQueue[0] = instruction;
+          _replaceFirstInstruction(instruction);
           _activeInstruction = null;
           _error =
               'Could not safely start the saved queue. No new action was sent.';
@@ -395,11 +515,13 @@ class CygnusController extends ChangeNotifier {
         _activeToolFailure = null;
         try {
           await _processInstruction(
-            instruction.text,
+            _instructionPromptText(instruction),
             fromVoice: instruction.fromVoice,
             instructionId: instruction.id,
           );
-          if (_pendingAction == null && _pendingRetry == null) {
+          if (_pendingAction == null &&
+              _pendingRetry == null &&
+              !_firstQueuedInstruction!.awaitingClarification) {
             await _completeActiveInstruction();
           }
         } catch (error, stack) {
@@ -442,11 +564,9 @@ class CygnusController extends ChangeNotifier {
         'Cannot complete an instruction without an active chat.',
       );
     }
-    final remaining = withoutCygnusInstruction(_instructionQueue, active.id);
+    final remaining = withoutCygnusInstruction(_instructionSnapshot, active.id);
     await _persistInstructionQueue(remaining);
-    _instructionQueue
-      ..clear()
-      ..addAll(remaining);
+    _replaceInstructionQueue(remaining);
     _activeInstruction = null;
     if (skipped) {
       _skippedInstructionCount++;
@@ -458,7 +578,7 @@ class CygnusController extends ChangeNotifier {
 
   Future<void> _skipActiveInstruction() async {
     _activeInstruction ??= _instructionQueue.isNotEmpty
-        ? _instructionQueue.first
+        ? _firstQueuedInstruction
         : null;
     await _completeActiveInstruction(skipped: true);
   }
@@ -500,6 +620,21 @@ class CygnusController extends ChangeNotifier {
     if (leafReply != null) {
       await _append(_assistantMessage(leafReply));
       if (fromVoice) await _handleVoiceReply(leafReply);
+      return;
+    }
+
+    if (needsCygnusScheduleDateClarification(text)) {
+      final question = switch (_languageCode) {
+        'ta' =>
+          'இந்த அட்டவணை எந்த தேதி அல்லது கிழமையிலிருந்து தொடங்க வேண்டும்?',
+        'hi' => 'यह शेड्यूल किस तारीख या दिन से शुरू होना चाहिए?',
+        'ml' => 'ഈ ഷെഡ്യൂൾ ഏത് തീയതി അല്ലെങ്കിൽ ദിവസത്തിൽ നിന്ന് തുടങ്ങണം?',
+        'kn' => 'ಈ ವೇಳಾಪಟ್ಟಿ ಯಾವ ದಿನಾಂಕ ಅಥವಾ ವಾರದ ದಿನದಿಂದ ಆರಂಭವಾಗಬೇಕು?',
+        _ => 'What date or weekday should this schedule start on?',
+      };
+      await _requestInstructionClarification(question);
+      await _appendAnimatedAssistant(question);
+      if (fromVoice) await _handleVoiceReply(question);
       return;
     }
 
@@ -609,7 +744,7 @@ class CygnusController extends ChangeNotifier {
     if (outcome != CygnusSpeechOutcome.interrupted &&
         !_listening &&
         !_voiceProcessing) {
-      if (_instructionQueue.isNotEmpty) return;
+      if (_instructionQueue.isNotEmpty && !awaitingClarification) return;
       await startVoiceInput(keepConversation: true, stopCurrentSpeech: false);
     }
   }
@@ -1024,7 +1159,7 @@ class CygnusController extends ChangeNotifier {
     _activeToolFailure = null;
     final active = _instructionQueue.isEmpty
         ? retry.instruction
-        : _instructionQueue.first;
+        : _firstQueuedInstruction;
 
     try {
       if (active != null) {
@@ -1033,7 +1168,7 @@ class CygnusController extends ChangeNotifier {
           retryCount: active.retryCount + 1,
         );
         if (_instructionQueue.isNotEmpty) {
-          _instructionQueue[0] = _activeInstruction!;
+          _replaceFirstInstruction(_activeInstruction!);
           await _persistInstructionQueue();
         }
       }
@@ -1057,7 +1192,7 @@ class CygnusController extends ChangeNotifier {
       } else {
         final instruction = active ?? retry.instruction!;
         await _processInstruction(
-          instruction.text,
+          _instructionPromptText(instruction),
           fromVoice: instruction.fromVoice,
           instructionId: instruction.id,
           appendUserMessage: false,
@@ -1264,7 +1399,7 @@ Immediate motor commands: if the user clearly asks to turn a specific motor on/o
 MULTI-MOTOR COMMANDS: complete the entire instruction before replying. If the user asks for several motor actions in one sentence (for example "motor 1 stop and motor 2 and 3 start"), call set_motor_batch ONCE with every requested motor/action pair. Verify every result and only then reply with one concise summary. Never stop after the first requested motor.
 If several separate instructions arrive while you are working, process them in order, finish and verify each instruction before starting the next, and never drop a queued instruction.
 
-Schedules: for any new schedule, collect motor, date, time, duration and repeat rule. If the user uses relative dates/times such as today/tomorrow/morning/evening, call get_current_context before resolving them. When all fields are available, call prepare_schedule. A prepared schedule is not active until the user confirms the in-chat confirmation card. Do not claim it is saved before confirmation.
+Schedules: for any new schedule, collect motor, an explicit calendar date or an unambiguous weekday, time, duration and repeat rule. A time by itself is never enough to infer a date; never silently use today, tomorrow, or any guessed date. If the date or weekday is missing or ambiguous, call request_clarification with one concise question and do not call prepare_schedule. The instruction stays in the FIFO queue while the user answers; use that answer with the same instruction. Resolve relative dates/weekdays only after get_current_context. Validate that the resulting date/time is a real future occurrence before calling prepare_schedule. A prepared schedule is not active until the user confirms the in-chat confirmation card. Do not claim it is saved before confirmation.
 
 For "live" requests, call get_current_status with live=true. For trend/history requests, call get_metric_trend. For schedule lists, call list_schedules. To change an existing plan, identify the correct saved schedule and call prepare_update_schedule; ask a short clarification if more than one schedule could match.
 
@@ -1323,7 +1458,17 @@ You may navigate the app using open_page when the user asks to open a page.
     return <Map<String, dynamic>>[
       fn(
         'get_current_context',
-        'Get current IST date/time plus device online state. Required for relative schedule times.',
+        'Get current IST date/time plus device online state. Required to resolve relative dates or weekdays before scheduling.',
+      ),
+      fn(
+        'request_clarification',
+        'Ask one concise follow-up when a required detail is missing or ambiguous. Use this instead of guessing, especially when a schedule has a time but no explicit date/day. This pauses only the current FIFO instruction until the user answers.',
+        properties: <String, dynamic>{
+          'question': str(
+            'One concise question asking for the missing detail.',
+          ),
+        },
+        required: const <String>['question'],
       ),
       fn(
         'get_current_status',
@@ -1394,7 +1539,7 @@ You may navigate the app using open_page when the user asks to open a page.
       ),
       fn(
         'prepare_schedule',
-        'Prepare one motor schedule for user confirmation. If another schedule is awaiting confirmation, do not replace it. Date YYYY-MM-DD, time HH:mm:ss in Asia/Kolkata.',
+        'Prepare one motor schedule for user confirmation only after the user supplied or unambiguously specified a valid future date, time, motor, duration, and repeat rule. Never invent a missing date. If a date/day is missing or unclear, use request_clarification instead. If another schedule is awaiting confirmation, do not replace it. Date YYYY-MM-DD, time HH:mm:ss in Asia/Kolkata.',
         properties: <String, dynamic>{
           'motor': integer('Motor number 1, 2 or 3.'),
           'date': str('Start date in YYYY-MM-DD.'),
@@ -1468,11 +1613,57 @@ You may navigate the app using open_page when the user asks to open a page.
     ];
   }
 
+  Future<Map<String, Object?>> _requestInstructionClarification(
+    String rawQuestion,
+  ) async {
+    final question = rawQuestion.trim();
+    final active = _activeInstruction;
+    final first = _firstQueuedInstruction;
+    if (question.isEmpty) {
+      return <String, Object?>{
+        'ok': false,
+        'message': 'A clarification question is required.',
+      };
+    }
+    if (active == null || first == null || first.id != active.id) {
+      throw StateError(
+        'Cannot pause a clarification without the active queue instruction.',
+      );
+    }
+
+    final waiting = active.copyWith(
+      started: true,
+      awaitingClarification: true,
+      clarificationQuestion: question,
+    );
+    _replaceFirstInstruction(waiting);
+    _activeInstruction = waiting;
+    try {
+      await _persistInstructionQueue();
+    } catch (_) {
+      _replaceFirstInstruction(active);
+      _activeInstruction = active;
+      rethrow;
+    }
+    notifyListeners();
+    return <String, Object?>{
+      'ok': true,
+      'awaitingClarification': true,
+      'question': question,
+    };
+  }
+
   Future<Map<String, Object?>> _executeTool(
     String name,
     Map<String, Object?> args,
   ) async {
     final result = await _executeToolInternal(name, args);
+    if (result['needsClarification'] == true) {
+      return _requestInstructionClarification(
+        result['question']?.toString() ??
+            'Please clarify the schedule details.',
+      );
+    }
     if (result['ok'] == false) {
       _activeToolFailure =
           result['message']?.toString() ?? 'The requested action failed.';
@@ -1487,6 +1678,10 @@ You may navigate the app using open_page when the user asks to open a page.
     switch (name) {
       case 'get_current_context':
         return _currentContext();
+      case 'request_clarification':
+        return await _requestInstructionClarification(
+          args['question']?.toString() ?? '',
+        );
       case 'get_current_status':
         return _currentStatus(live: args['live'] == true);
       case 'get_metric_trend':
@@ -1807,9 +2002,15 @@ You may navigate the app using open_page when the user asks to open a page.
       repeat: repeat,
       weekdays: weekdays,
       endDate: endDate,
+      requireFutureStart: true,
     );
     if (validation != null) {
-      return <String, Object?>{'ok': false, 'message': validation};
+      return <String, Object?>{
+        'ok': false,
+        'needsClarification': true,
+        'message': validation,
+        'question': _scheduleValidationQuestion(validation),
+      };
     }
 
     final action = PendingCygnusAction(
@@ -1912,9 +2113,15 @@ You may navigate the app using open_page when the user asks to open a page.
       repeat: repeat,
       weekdays: weekdays,
       endDate: endDate,
+      requireFutureStart: args.containsKey('date') || args.containsKey('time'),
     );
     if (validation != null) {
-      return <String, Object?>{'ok': false, 'message': validation};
+      return <String, Object?>{
+        'ok': false,
+        'needsClarification': true,
+        'message': validation,
+        'question': _scheduleValidationQuestion(validation),
+      };
     }
 
     final action = PendingCygnusAction(
@@ -2308,10 +2515,10 @@ You may navigate the app using open_page when the user asks to open a page.
     required String repeat,
     required List<int> weekdays,
     String? endDate,
+    bool requireFutureStart = false,
   }) {
     if (motor < 1 || motor > 3) return 'Choose Motor 1, 2 or 3.';
-    if (!RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(date))
-      return 'Date must be YYYY-MM-DD.';
+    if (!_isValidDateKey(date)) return 'Date must be YYYY-MM-DD.';
     if (!RegExp(r'^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$').hasMatch(time))
       return 'Time must be HH:mm:ss.';
     if (durationSec < 1 || durationSec > 86400)
@@ -2320,12 +2527,70 @@ You may navigate the app using open_page when the user asks to open a page.
       return 'Repeat must be once, daily or weekly.';
     if (repeat == 'weekly' && weekdays.isEmpty)
       return 'Choose at least one weekday.';
-    if (endDate != null &&
-        endDate.isNotEmpty &&
-        !RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(endDate)) {
-      return 'End date must be YYYY-MM-DD.';
+    if (endDate != null && endDate.isNotEmpty) {
+      if (!_isValidDateKey(endDate)) return 'End date must be YYYY-MM-DD.';
+      if (endDate.compareTo(date) < 0) {
+        return 'End date cannot be before the start date.';
+      }
+    }
+    if (requireFutureStart) {
+      final startsAt = DateTime.parse('${date}T${time}+05:30').toUtc();
+      if (!startsAt.isAfter(DateTime.now().toUtc())) {
+        return 'Choose a future date and time; the requested start has already passed.';
+      }
     }
     return null;
+  }
+
+  String _scheduleValidationQuestion(String validation) {
+    if (validation.startsWith('Date must') ||
+        validation.startsWith('Choose a future date')) {
+      return _languageCode == 'ta'
+          ? 'எந்த எதிர்கால தேதி அல்லது கிழமையை பயன்படுத்த வேண்டும்?'
+          : 'What future date or weekday should I use?';
+    }
+    if (validation.startsWith('End date')) {
+      return _languageCode == 'ta'
+          ? 'அட்டவணை எப்போது முடிவடைய வேண்டும்?'
+          : 'What end date should I use?';
+    }
+    if (validation.startsWith('Time must')) {
+      return _languageCode == 'ta'
+          ? 'எந்த நேரத்தில் இயக்க வேண்டும்?'
+          : 'What time should the motor run?';
+    }
+    if (validation.startsWith('Duration')) {
+      return _languageCode == 'ta'
+          ? 'எவ்வளவு நேரம் இயக்க வேண்டும்?'
+          : 'How long should it run?';
+    }
+    if (validation.startsWith('Repeat')) {
+      return _languageCode == 'ta'
+          ? 'ஒருமுறை, தினமும் அல்லது வாரந்தோறும் இயக்கவா?'
+          : 'Should it run once, daily, or weekly?';
+    }
+    if (validation.startsWith('Choose at least one weekday')) {
+      return _languageCode == 'ta'
+          ? 'எந்த கிழமைகளில் இயக்க வேண்டும்?'
+          : 'Which weekdays should it run?';
+    }
+    if (validation.startsWith('Choose Motor')) {
+      return _languageCode == 'ta'
+          ? 'எந்த மோட்டாரை பயன்படுத்த வேண்டும் (1, 2 அல்லது 3)?'
+          : 'Which motor should I use: 1, 2, or 3?';
+    }
+    return _languageCode == 'ta'
+        ? 'அட்டவணை விவரத்தை தெளிவுபடுத்த முடியுமா?'
+        : 'Could you clarify that schedule detail?';
+  }
+
+  bool _isValidDateKey(String value) {
+    if (!RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(value)) return false;
+    final parts = value.split('-').map(int.parse).toList(growable: false);
+    final date = DateTime.utc(parts[0], parts[1], parts[2]);
+    return date.year == parts[0] &&
+        date.month == parts[1] &&
+        date.day == parts[2];
   }
 
   Future<void> _appendAnimatedAssistant(String fullText) async {
@@ -2550,4 +2815,11 @@ class _PendingCygnusRetry {
   final CygnusQueuedInstruction? instruction;
   final PendingCygnusAction? action;
   final int retryCount;
+}
+
+base class _CygnusInstructionEntry
+    extends LinkedListEntry<_CygnusInstructionEntry> {
+  _CygnusInstructionEntry(this.instruction);
+
+  final CygnusQueuedInstruction instruction;
 }

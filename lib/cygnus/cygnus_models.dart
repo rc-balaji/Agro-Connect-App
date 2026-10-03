@@ -178,6 +178,86 @@ List<String> splitCygnusInstructions(String input) => input
     .where((part) => part.isNotEmpty)
     .toList(growable: false);
 
+bool needsCygnusScheduleDateClarification(String input) {
+  final value = input.toLowerCase();
+  final scheduleIntent =
+      RegExp(r'\b(schedule|scheduling|scheduled)\b').hasMatch(value) ||
+      (RegExp(r'\bplan\b').hasMatch(value) &&
+          RegExp(r'\bmotor\b').hasMatch(value)) ||
+      value.contains('அட்டவணை');
+  if (!scheduleIntent ||
+      RegExp(
+        r'\b(update|modify|change|edit|delete|remove|disable|enable|list|show|check|view|cancel)\b',
+      ).hasMatch(value)) {
+    return false;
+  }
+
+  final dateMentioned =
+      RegExp(
+        r'\b(today|tonight|tomorrow|day after tomorrow|yesterday|'
+        r'monday|tuesday|wednesday|thursday|friday|saturday|sunday|'
+        r'mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun|'
+        r'thingal|chevvai|sevvaai|budhan|viyazhan|vyazhan|'
+        r'velli|sani|nyayiru|'
+        r'in\s+\d+\s+(?:days?|weeks?)|after\s+\d+\s+(?:days?|weeks?)|'
+        r'naalai|naalaiku|naalaikku|nalai|naliku|indru)\b',
+        caseSensitive: false,
+      ).hasMatch(value) ||
+      const [
+        'இன்று',
+        'நாளை',
+        'நாளைக்கு',
+        'திங்கள்',
+        'செவ்வாய்',
+        'புதன்',
+        'வியாழன்',
+        'வெள்ளி',
+        'சனி',
+        'ஞாயிறு',
+        'आज',
+        'कल',
+        'परसों',
+        'सोमवार',
+        'मंगलवार',
+        'बुधवार',
+        'गुरुवार',
+        'शुक्रवार',
+        'शनिवार',
+        'रविवार',
+        'ഇന്ന്',
+        'നാളെ',
+        'തിങ്കളാഴ്ച',
+        'ചൊവ്വാഴ്ച',
+        'ബുധനാഴ്ച',
+        'വ്യാഴാഴ്ച',
+        'വെള്ളിയാഴ്ച',
+        'ശനിയാഴ്ച',
+        'ഞായറാഴ്ച',
+        'ಇಂದು',
+        'ನಾಳೆ',
+        'ಸೋಮವಾರ',
+        'ಮಂಗಳವಾರ',
+        'ಬುಧವಾರ',
+        'ಗುರುವಾರ',
+        'ಶುಕ್ರವಾರ',
+        'ಶನಿವಾರ',
+        'ಭಾನುವಾರ',
+      ].any(value.contains) ||
+      RegExp(r'\b\d{4}-\d{1,2}-\d{1,2}\b').hasMatch(value) ||
+      RegExp(r'\b\d{1,2}[/-]\d{1,2}[/-]\d{4}\b').hasMatch(value) ||
+      RegExp(
+        r'\b\d{1,2}(?:st|nd|rd|th)?\s+'
+        r'(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|'
+        r'jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|'
+        r'nov(?:ember)?|dec(?:ember)?)\b|'
+        r'\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|'
+        r'jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|'
+        r'nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?\b',
+        caseSensitive: false,
+      ).hasMatch(value);
+  return !dateMentioned;
+}
+
 class CygnusQueuedInstruction {
   const CygnusQueuedInstruction({
     required this.id,
@@ -185,6 +265,9 @@ class CygnusQueuedInstruction {
     required this.fromVoice,
     this.started = false,
     this.retryCount = 0,
+    this.awaitingClarification = false,
+    this.clarificationQuestion,
+    this.clarificationAnswers = const <String>[],
   });
 
   final String id;
@@ -192,15 +275,31 @@ class CygnusQueuedInstruction {
   final bool fromVoice;
   final bool started;
   final int retryCount;
+  final bool awaitingClarification;
+  final String? clarificationQuestion;
+  final List<String> clarificationAnswers;
 
-  CygnusQueuedInstruction copyWith({bool? started, int? retryCount}) =>
-      CygnusQueuedInstruction(
-        id: id,
-        text: text,
-        fromVoice: fromVoice,
-        started: started ?? this.started,
-        retryCount: retryCount ?? this.retryCount,
-      );
+  CygnusQueuedInstruction copyWith({
+    String? text,
+    bool? started,
+    int? retryCount,
+    bool? fromVoice,
+    bool? awaitingClarification,
+    String? clarificationQuestion,
+    bool clearClarificationQuestion = false,
+    List<String>? clarificationAnswers,
+  }) => CygnusQueuedInstruction(
+    id: id,
+    text: text ?? this.text,
+    fromVoice: fromVoice ?? this.fromVoice,
+    started: started ?? this.started,
+    retryCount: retryCount ?? this.retryCount,
+    awaitingClarification: awaitingClarification ?? this.awaitingClarification,
+    clarificationQuestion: clearClarificationQuestion
+        ? null
+        : (clarificationQuestion ?? this.clarificationQuestion),
+    clarificationAnswers: clarificationAnswers ?? this.clarificationAnswers,
+  );
 
   Map<String, Object?> toMap() => <String, Object?>{
     'id': id,
@@ -208,6 +307,10 @@ class CygnusQueuedInstruction {
     'fromVoice': fromVoice,
     'started': started,
     'retryCount': retryCount,
+    'awaitingClarification': awaitingClarification,
+    if (clarificationQuestion != null)
+      'clarificationQuestion': clarificationQuestion,
+    'clarificationAnswers': clarificationAnswers,
   };
 
   factory CygnusQueuedInstruction.fromMap(Map<String, dynamic> map) {
@@ -227,6 +330,14 @@ class CygnusQueuedInstruction {
       retryCount: retryCount is num
           ? retryCount.toInt().clamp(0, 20).toInt()
           : 0,
+      awaitingClarification: map['awaitingClarification'] == true,
+      clarificationQuestion: map['clarificationQuestion']?.toString(),
+      clarificationAnswers: map['clarificationAnswers'] is List
+          ? (map['clarificationAnswers'] as List)
+                .whereType<String>()
+                .where((answer) => answer.trim().isNotEmpty)
+                .toList(growable: false)
+          : const <String>[],
     );
   }
 }

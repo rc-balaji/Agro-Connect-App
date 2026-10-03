@@ -6,10 +6,11 @@ import 'package:http/http.dart' as http;
 
 import 'cygnus_models.dart';
 
-typedef CygnusToolExecutor = Future<Map<String, Object?>> Function(
-  String name,
-  Map<String, Object?> arguments,
-);
+typedef CygnusToolExecutor =
+    Future<Map<String, Object?>> Function(
+      String name,
+      Map<String, Object?> arguments,
+    );
 
 class GroqCygnusException implements Exception {
   const GroqCygnusException({
@@ -48,10 +49,7 @@ class GroqCygnusService {
     required String reasoningEffort,
   }) async {
     final messages = <Map<String, dynamic>>[
-      <String, dynamic>{
-        'role': 'system',
-        'content': systemInstruction,
-      },
+      <String, dynamic>{'role': 'system', 'content': systemInstruction},
       ..._conversationMessages(conversation),
     ];
 
@@ -81,7 +79,16 @@ class GroqCygnusService {
         'tool_calls': toolCalls,
       });
 
-      for (final call in toolCalls) {
+      final clarificationCalls = toolCalls
+          .where((call) {
+            final function = _asMap(call['function']);
+            return function['name'] == 'request_clarification';
+          })
+          .toList(growable: false);
+      final callsToExecute = clarificationCalls.isEmpty
+          ? toolCalls
+          : clarificationCalls.take(1);
+      for (final call in callsToExecute) {
         final function = _asMap(call['function']);
         final name = function['name']?.toString() ?? '';
         final rawArgs = function['arguments']?.toString() ?? '{}';
@@ -103,6 +110,25 @@ class GroqCygnusService {
           'name': name,
           'content': jsonEncode(result),
         });
+        if (name == 'request_clarification' &&
+            result['awaitingClarification'] != true) {
+          throw GroqCygnusException(
+            code: 'clarification_not_saved',
+            message:
+                result['message']?.toString() ??
+                'Cygnus could not save the clarification request.',
+          );
+        }
+        if (result['awaitingClarification'] == true) {
+          final question = result['question']?.toString().trim() ?? '';
+          if (question.isEmpty) {
+            throw const GroqCygnusException(
+              code: 'invalid_clarification',
+              message: 'Cygnus could not form a clarification question.',
+            );
+          }
+          return question;
+        }
       }
     }
 
@@ -118,7 +144,9 @@ class GroqCygnusService {
     required List<Map<String, dynamic>> messages,
     required List<Map<String, dynamic>> tools,
   }) async {
-    final uri = Uri.parse('${gatewayUrl.replaceAll(RegExp(r'/+$'), '')}/v1/chat');
+    final uri = Uri.parse(
+      '${gatewayUrl.replaceAll(RegExp(r'/+$'), '')}/v1/chat',
+    );
 
     String? firebaseToken;
     try {
@@ -168,7 +196,8 @@ class GroqCygnusService {
     if (response.statusCode < 200 || response.statusCode >= 300) {
       final error = _asMap(decoded['error']);
       final code = error['code']?.toString() ?? 'gateway_error';
-      final message = error['message']?.toString() ??
+      final message =
+          error['message']?.toString() ??
           'Cygnus AI gateway returned ${response.statusCode}.';
       throw GroqCygnusException(
         code: code,
@@ -193,7 +222,9 @@ class GroqCygnusService {
         final crop = p['crop']?.toString() ?? 'Plant';
         final condition = p['condition']?.toString() ?? 'Unknown condition';
         final confidence = (p['confidence'] as num?)?.toDouble();
-        final pct = confidence == null ? 'unknown' : '${(confidence * 100).toStringAsFixed(0)}%';
+        final pct = confidence == null
+            ? 'unknown'
+            : '${(confidence * 100).toStringAsFixed(0)}%';
         final treatment = _stringList(p['treatment']).take(4).join('; ');
         final prevention = _stringList(p['prevention']).take(4).join('; ');
         final symptoms = _stringList(p['symptoms']).take(4).join('; ');
@@ -203,9 +234,13 @@ class GroqCygnusService {
     }
 
     final eligible = conversation
-        .where((message) => message.role == 'user' || message.role == 'assistant')
+        .where(
+          (message) => message.role == 'user' || message.role == 'assistant',
+        )
         .map((message) => (message: message, content: contentFor(message)))
-        .where((item) => item.content != null && item.content!.trim().isNotEmpty)
+        .where(
+          (item) => item.content != null && item.content!.trim().isNotEmpty,
+        )
         .toList(growable: false);
 
     final recent = eligible.length > 20
@@ -243,7 +278,8 @@ class GroqCygnusService {
   }
 
   List<String> _stringList(Object? value) {
-    if (value is List) return value.map((e) => e.toString()).toList(growable: false);
+    if (value is List)
+      return value.map((e) => e.toString()).toList(growable: false);
     return const <String>[];
   }
 

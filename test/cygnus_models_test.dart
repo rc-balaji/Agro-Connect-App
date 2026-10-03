@@ -63,6 +63,45 @@ void main() {
     );
   });
 
+  test('schedule instructions without a start date need clarification', () {
+    expect(
+      needsCygnusScheduleDateClarification(
+        'Schedule motor 1 at 6 PM for 30 minutes',
+      ),
+      isTrue,
+    );
+    expect(
+      needsCygnusScheduleDateClarification('Schedule motor 1 tomorrow at 6 PM'),
+      isFalse,
+    );
+    expect(
+      needsCygnusScheduleDateClarification(
+        'Schedule motor 1 at 6 PM starting 2026-10-10',
+      ),
+      isFalse,
+    );
+    expect(
+      needsCygnusScheduleDateClarification(
+        'Schedule motor 1 at 6 PM next week',
+      ),
+      isTrue,
+    );
+    expect(
+      needsCygnusScheduleDateClarification(
+        'மோட்டார் அட்டவணை நாளை மாலை 6 மணிக்கு',
+      ),
+      isFalse,
+    );
+    expect(
+      needsCygnusScheduleDateClarification('Show the schedule for motor 1'),
+      isFalse,
+    );
+    expect(
+      needsCygnusScheduleDateClarification('Update motor 1 schedule time to 6'),
+      isFalse,
+    );
+  });
+
   test('queued instruction round trips state before restart recovery', () {
     const instruction = CygnusQueuedInstruction(
       id: 'instruction-1',
@@ -70,6 +109,9 @@ void main() {
       fromVoice: true,
       started: true,
       retryCount: 1,
+      awaitingClarification: true,
+      clarificationQuestion: 'Which date should I use?',
+      clarificationAnswers: ['tomorrow'],
     );
 
     final restored = CygnusQueuedInstruction.fromMap(instruction.toMap());
@@ -79,6 +121,15 @@ void main() {
     expect(restored.fromVoice, isTrue);
     expect(restored.started, isTrue);
     expect(restored.retryCount, 1);
+    expect(restored.awaitingClarification, isTrue);
+    expect(restored.clarificationQuestion, 'Which date should I use?');
+    expect(restored.clarificationAnswers, ['tomorrow']);
+    final resumed = restored.copyWith(
+      awaitingClarification: false,
+      clearClarificationQuestion: true,
+    );
+    expect(resumed.awaitingClarification, isFalse);
+    expect(resumed.clarificationQuestion, isNull);
   });
 
   test('skipping one instruction preserves later FIFO instructions', () {
@@ -122,6 +173,10 @@ void main() {
         id: 'second',
         text: 'Create motor 2 schedule',
         fromVoice: true,
+        started: true,
+        awaitingClarification: true,
+        clarificationQuestion: 'Which day should I use?',
+        clarificationAnswers: ['Friday'],
       ),
     ];
 
@@ -133,6 +188,9 @@ void main() {
       'Create motor 1 schedule',
       'Create motor 2 schedule',
     ]);
+    expect(restored.last.awaitingClarification, isTrue);
+    expect(restored.last.clarificationQuestion, 'Which day should I use?');
+    expect(restored.last.clarificationAnswers, ['Friday']);
 
     await store.saveInstructionQueue('chat_1', const []);
     expect(await store.loadInstructionQueue('chat_1'), isEmpty);

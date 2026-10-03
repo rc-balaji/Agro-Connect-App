@@ -411,6 +411,7 @@ class _CygnusPageState extends State<CygnusPage> {
             cygnus.queuedInstructions.isNotEmpty ||
             cygnus.pendingAction != null ||
             cygnus.pendingRetryId != null ||
+            cygnus.awaitingClarification ||
             cygnus.restoringQueue)
           Positioned(
             top: 70,
@@ -426,6 +427,8 @@ class _CygnusPageState extends State<CygnusPage> {
               running: cygnus.processingInstructionQueue || cygnus.busy,
               waitingForConfirmation: cygnus.pendingAction != null,
               waitingForDecision: cygnus.pendingRetryId != null,
+              waitingForClarification: cygnus.awaitingClarification,
+              clarificationQuestion: cygnus.clarificationQuestion,
               restoring: cygnus.restoringQueue,
               failedInstruction: cygnus.pendingRetryInstruction,
             ),
@@ -2003,6 +2006,8 @@ class _InstructionQueueOverlay extends StatelessWidget {
     required this.running,
     required this.waitingForConfirmation,
     required this.waitingForDecision,
+    required this.waitingForClarification,
+    required this.clarificationQuestion,
     required this.restoring,
     required this.failedInstruction,
   });
@@ -2016,12 +2021,16 @@ class _InstructionQueueOverlay extends StatelessWidget {
   final bool running;
   final bool waitingForConfirmation;
   final bool waitingForDecision;
+  final bool waitingForClarification;
+  final String? clarificationQuestion;
   final bool restoring;
   final String? failedInstruction;
 
   @override
   Widget build(BuildContext context) {
-    final title = waitingForDecision
+    final title = waitingForClarification
+        ? 'Need a schedule detail'
+        : waitingForDecision
         ? 'Action needs your choice'
         : waitingForConfirmation
         ? 'Waiting for schedule confirmation'
@@ -2030,7 +2039,9 @@ class _InstructionQueueOverlay extends StatelessWidget {
         : running
         ? 'Processing instruction queue'
         : 'Instructions queued';
-    final current = waitingForDecision
+    final current = waitingForClarification
+        ? clarificationQuestion ?? active
+        : waitingForDecision
         ? failedInstruction
         : active ?? (waiting.isNotEmpty ? waiting.first : null);
     return IgnorePointer(
@@ -2063,13 +2074,13 @@ class _InstructionQueueOverlay extends StatelessWidget {
               Row(
                 children: [
                   Icon(
-                    waitingForDecision
+                    waitingForDecision || waitingForClarification
                         ? Icons.warning_amber_rounded
                         : waitingForConfirmation
                         ? Icons.event_available_rounded
                         : Icons.queue_play_next_rounded,
                     size: 18,
-                    color: waitingForDecision
+                    color: waitingForDecision || waitingForClarification
                         ? AppTheme.amber
                         : AppTheme.emeraldSoft,
                   ),
@@ -2107,7 +2118,9 @@ class _InstructionQueueOverlay extends StatelessWidget {
                 minHeight: 3,
                 borderRadius: BorderRadius.circular(99),
                 backgroundColor: AppTheme.border,
-                color: waitingForDecision ? AppTheme.amber : AppTheme.emerald,
+                color: waitingForDecision || waitingForClarification
+                    ? AppTheme.amber
+                    : AppTheme.emerald,
               ),
             ],
           ),
