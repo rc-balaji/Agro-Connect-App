@@ -28,7 +28,6 @@ class CygnusVoiceService {
   Timer? _bargeTimer;
   DateTime? _bargeStartedAt;
   String? _bargePath;
-  String _languageCode = 'en';
   String _latestWords = '';
   double _minSound = 999;
   double _maxSound = -999;
@@ -108,7 +107,6 @@ class CygnusVoiceService {
     await _stopBargeMonitor();
     await stopSpeaking();
 
-    _languageCode = languageCode;
     _onPartial = onPartial;
     _onFinal = onFinal;
     _onError = onError;
