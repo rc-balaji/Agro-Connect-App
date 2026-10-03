@@ -278,66 +278,428 @@ class _CygnusPageState extends State<CygnusPage> {
     final cygnus = context.watch<CygnusController>();
     _scheduleScroll(cygnus.messages.length + (cygnus.busy ? 1 : 0));
 
-    return Column(
+    return Stack(
       children: [
-        _CygnusBar(
-          languageCode: cygnus.languageCode,
-          voiceReply: cygnus.voiceReply,
-          voiceConversation: cygnus.voiceConversation,
-          voiceAvailable: cygnus.voiceAvailable,
-          onVoiceConversation: cygnus.voiceConversation
-              ? cygnus.stopVoiceConversation
-              : cygnus.startVoiceConversation,
-          onSessions: _showSessions,
-          onNewChat: cygnus.newChat,
-          onVoiceReplyChanged: cygnus.setVoiceReply,
-          onLanguageChanged: cygnus.setLanguage,
-        ),
-        Expanded(
-          child: cygnus.loadingSession
-              ? const Center(child: CircularProgressIndicator())
-              : ListView.builder(
-                  controller: _scroll,
-                  keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-                  physics: const BouncingScrollPhysics(),
-                  padding: const EdgeInsets.fromLTRB(14, 12, 14, 18),
-                  itemCount: cygnus.messages.length + (cygnus.busy ? 1 : 0),
-                  itemBuilder: (context, index) {
-                    if (index >= cygnus.messages.length) {
-                      return const _ThinkingBubble();
-                    }
-                    return _CygnusMessageView(
-                      message: cygnus.messages[index],
-                      pendingAction: cygnus.pendingAction,
-                      onConfirm: cygnus.confirmPendingAction,
-                      onCancel: cygnus.cancelPendingAction,
-                      onPrompt: (value) {
-                        _composer.text = value;
-                        _send();
+        Column(
+          children: [
+            _CygnusBar(
+              languageCode: cygnus.languageCode,
+              voiceReply: cygnus.voiceReply,
+              voiceConversation: cygnus.voiceConversation,
+              voiceAvailable: cygnus.voiceAvailable,
+              onVoiceConversation: cygnus.voiceConversation
+                  ? cygnus.stopVoiceConversation
+                  : cygnus.startVoiceConversation,
+              onSessions: _showSessions,
+              onNewChat: cygnus.newChat,
+              onVoiceReplyChanged: cygnus.setVoiceReply,
+              onLanguageChanged: cygnus.setLanguage,
+            ),
+            Expanded(
+              child: cygnus.loadingSession
+                  ? const Center(child: CircularProgressIndicator())
+                  : ListView.builder(
+                      controller: _scroll,
+                      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+                      physics: const BouncingScrollPhysics(),
+                      padding: const EdgeInsets.fromLTRB(14, 12, 14, 18),
+                      itemCount: cygnus.messages.length + (cygnus.busy ? 1 : 0),
+                      itemBuilder: (context, index) {
+                        if (index >= cygnus.messages.length) {
+                          return const _ThinkingBubble();
+                        }
+                        return _CygnusMessageView(
+                          message: cygnus.messages[index],
+                          pendingAction: cygnus.pendingAction,
+                          onConfirm: cygnus.confirmPendingAction,
+                          onCancel: cygnus.cancelPendingAction,
+                          onPrompt: (value) {
+                            _composer.text = value;
+                            _send();
+                          },
+                        );
                       },
-                    );
-                  },
-                ),
+                    ),
+            ),
+            if (!cygnus.voiceConversation &&
+                (cygnus.listening || cygnus.voiceProcessing || cygnus.voiceDraft.isNotEmpty))
+              _VoiceStrip(
+                text: cygnus.voiceDraft,
+                level: cygnus.voiceLevel,
+                processing: cygnus.voiceProcessing,
+                onStop: cygnus.stopVoiceInput,
+                onCancel: cygnus.cancelVoiceInput,
+              ),
+            _Composer(
+              controller: _composer,
+              focusNode: _focus,
+              busy: cygnus.busy,
+              listening: cygnus.listening,
+              voiceProcessing: cygnus.voiceProcessing,
+              voiceAvailable: cygnus.voiceAvailable,
+              onAttach: _showAttachmentSheet,
+              onSend: _send,
+              onMic: cygnus.listening ? cygnus.stopVoiceInput : cygnus.startVoiceInput,
+            ),
+          ],
         ),
-        if (cygnus.listening || cygnus.voiceProcessing || cygnus.voiceDraft.isNotEmpty)
-          _VoiceStrip(
-            text: cygnus.voiceDraft,
-            level: cygnus.voiceLevel,
-            processing: cygnus.voiceProcessing,
-            onStop: cygnus.stopVoiceInput,
+        if (cygnus.voiceConversation)
+          Positioned.fill(
+            child: _LiveVoiceExperience(
+              messages: cygnus.messages,
+              listening: cygnus.listening,
+              processing: cygnus.voiceProcessing || cygnus.busy,
+              speaking: cygnus.speaking,
+              level: cygnus.voiceLevel,
+              draft: cygnus.voiceDraft,
+              languageCode: cygnus.languageCode,
+              onEnd: cygnus.stopVoiceConversation,
+              onStopListening: cygnus.stopVoiceInput,
+              onCancelListening: cygnus.cancelVoiceInput,
+              onInterrupt: cygnus.interruptAssistant,
+              onStartListening: () => cygnus.startVoiceInput(keepConversation: true),
+            ),
           ),
-        _Composer(
-          controller: _composer,
-          focusNode: _focus,
-          busy: cygnus.busy,
-          listening: cygnus.listening,
-          voiceProcessing: cygnus.voiceProcessing,
-          voiceAvailable: cygnus.voiceAvailable,
-          onAttach: _showAttachmentSheet,
-          onSend: _send,
-          onMic: cygnus.listening ? cygnus.stopVoiceInput : cygnus.startVoiceInput,
-        ),
       ],
+    );
+  }
+}
+
+
+class _LiveVoiceExperience extends StatefulWidget {
+  const _LiveVoiceExperience({
+    required this.messages,
+    required this.listening,
+    required this.processing,
+    required this.speaking,
+    required this.level,
+    required this.draft,
+    required this.languageCode,
+    required this.onEnd,
+    required this.onStopListening,
+    required this.onCancelListening,
+    required this.onInterrupt,
+    required this.onStartListening,
+  });
+
+  final List<CygnusMessage> messages;
+  final bool listening;
+  final bool processing;
+  final bool speaking;
+  final double level;
+  final String draft;
+  final String languageCode;
+  final Future<void> Function() onEnd;
+  final Future<void> Function() onStopListening;
+  final Future<void> Function() onCancelListening;
+  final Future<void> Function() onInterrupt;
+  final Future<void> Function() onStartListening;
+
+  @override
+  State<_LiveVoiceExperience> createState() => _LiveVoiceExperienceState();
+}
+
+class _LiveVoiceExperienceState extends State<_LiveVoiceExperience>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _wave;
+
+  @override
+  void initState() {
+    super.initState();
+    _wave = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1150),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _wave.dispose();
+    super.dispose();
+  }
+
+  String get _stateLabel {
+    if (widget.speaking) return 'Cygnus is speaking';
+    if (widget.processing) return 'Thinking…';
+    if (widget.listening) return 'Listening…';
+    return 'Ready when you are';
+  }
+
+  Color get _stateColor {
+    if (widget.speaking) return const Color(0xFF83B7FF);
+    if (widget.processing) return AppTheme.amber;
+    if (widget.listening) return AppTheme.emeraldSoft;
+    return AppTheme.muted;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final visibleMessages = widget.messages
+        .where((message) => message.text.trim().isNotEmpty)
+        .toList(growable: false);
+    final recent = visibleMessages.length <= 6
+        ? visibleMessages
+        : visibleMessages.sublist(visibleMessages.length - 6);
+
+    return Material(
+      color: AppTheme.background,
+      child: SafeArea(
+        child: Container(
+          decoration: const BoxDecoration(
+            gradient: RadialGradient(
+              center: Alignment(0, -0.25),
+              radius: 1.05,
+              colors: [Color(0xFF142851), Color(0xFF091D18), Color(0xFF06120E)],
+              stops: [0, 0.48, 1],
+            ),
+          ),
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 8, 8, 0),
+                child: Row(
+                  children: [
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Live with Cygnus', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+                          SizedBox(height: 2),
+                          Text(
+                            'Speak naturally · interrupt anytime',
+                            style: TextStyle(color: AppTheme.muted, fontSize: 11),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: AppTheme.surface2.withValues(alpha: 0.85),
+                        borderRadius: BorderRadius.circular(99),
+                        border: Border.all(color: AppTheme.border),
+                      ),
+                      child: Text(
+                        widget.languageCode.toUpperCase(),
+                        style: const TextStyle(fontSize: 9.5, fontWeight: FontWeight.w900),
+                      ),
+                    ),
+                    const SizedBox(width: 5),
+                    IconButton(
+                      tooltip: 'End live interaction',
+                      onPressed: widget.onEnd,
+                      icon: const Icon(Icons.close_rounded, color: Colors.white),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              AnimatedBuilder(
+                animation: _wave,
+                builder: (context, _) {
+                  final phase = _wave.value * math.pi * 2;
+                  final glow = 0.22 + (math.sin(phase).abs() * 0.18);
+                  return Container(
+                    width: 142,
+                    height: 142,
+                    padding: const EdgeInsets.all(18),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: const Color(0xFF111C3D),
+                      border: Border.all(color: const Color(0xFF7997FF).withValues(alpha: 0.42)),
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFF4F7DFF).withValues(alpha: glow),
+                          blurRadius: 52,
+                          spreadRadius: 10,
+                        ),
+                        BoxShadow(
+                          color: const Color(0xFF59D7FF).withValues(alpha: glow * 0.55),
+                          blurRadius: 78,
+                          spreadRadius: 2,
+                        ),
+                      ],
+                    ),
+                    child: Image.asset(
+                      'assets/branding/cygnus_emblem.png',
+                      fit: BoxFit.contain,
+                      filterQuality: FilterQuality.high,
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 16),
+              Text(
+                _stateLabel,
+                style: TextStyle(color: _stateColor, fontSize: 14, fontWeight: FontWeight.w900),
+              ),
+              const SizedBox(height: 12),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 34),
+                child: widget.speaking
+                    ? _SpeakingWave(animation: _wave)
+                    : _VoiceWave(level: widget.listening ? widget.level : (widget.processing ? 0.12 : 0.04)),
+              ),
+              if (widget.draft.isNotEmpty &&
+                  widget.draft != 'Listening…' &&
+                  widget.draft != 'Understanding your voice…') ...[
+                const SizedBox(height: 10),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                  child: Text(
+                    widget.draft,
+                    textAlign: TextAlign.center,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w700, height: 1.35),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 18),
+              Expanded(
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 14),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF071A14).withValues(alpha: 0.84),
+                    borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+                    border: Border.all(color: AppTheme.border.withValues(alpha: 0.72)),
+                  ),
+                  child: recent.isEmpty
+                      ? const Center(
+                          child: Text('Start speaking to Cygnus', style: TextStyle(color: AppTheme.muted)),
+                        )
+                      : ListView.builder(
+                          reverse: true,
+                          padding: const EdgeInsets.fromLTRB(14, 14, 14, 8),
+                          itemCount: recent.length,
+                          itemBuilder: (context, reverseIndex) {
+                            final message = recent[recent.length - 1 - reverseIndex];
+                            final user = message.role == 'user';
+                            return Align(
+                              alignment: user ? Alignment.centerRight : Alignment.centerLeft,
+                              child: Container(
+                                constraints: const BoxConstraints(maxWidth: 340),
+                                margin: const EdgeInsets.only(bottom: 8),
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                                decoration: BoxDecoration(
+                                  color: user
+                                      ? AppTheme.emerald.withValues(alpha: 0.13)
+                                      : const Color(0xFF13223A).withValues(alpha: 0.92),
+                                  borderRadius: BorderRadius.circular(15),
+                                  border: Border.all(
+                                    color: user
+                                        ? AppTheme.emerald.withValues(alpha: 0.22)
+                                        : const Color(0xFF526A98).withValues(alpha: 0.28),
+                                  ),
+                                ),
+                                child: Text(
+                                  message.text,
+                                  style: const TextStyle(fontSize: 12.5, height: 1.35),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 12, 18, 18),
+                child: Column(
+                  children: [
+                    if (widget.speaking)
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.icon(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: const Color(0xFF24345C),
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                          ),
+                          onPressed: widget.onInterrupt,
+                          icon: const Icon(Icons.mic_rounded),
+                          label: const Text('Interrupt & speak'),
+                        ),
+                      )
+                    else if (widget.listening)
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: widget.onCancelListening,
+                              icon: const Icon(Icons.close_rounded),
+                              label: const Text('Cancel'),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: FilledButton.icon(
+                              style: FilledButton.styleFrom(backgroundColor: AppTheme.red),
+                              onPressed: widget.onStopListening,
+                              icon: const Icon(Icons.stop_rounded),
+                              label: const Text('Finish'),
+                            ),
+                          ),
+                        ],
+                      )
+                    else if (!widget.processing)
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.icon(
+                          onPressed: widget.onStartListening,
+                          icon: const Icon(Icons.mic_rounded),
+                          label: const Text('Speak'),
+                        ),
+                      ),
+                    const SizedBox(height: 8),
+                    TextButton.icon(
+                      onPressed: widget.onEnd,
+                      icon: const Icon(Icons.call_end_rounded, size: 18),
+                      label: const Text('End live interaction'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SpeakingWave extends StatelessWidget {
+  const _SpeakingWave({required this.animation});
+
+  final Animation<double> animation;
+
+  @override
+  Widget build(BuildContext context) {
+    final phase = animation.value * math.pi * 2;
+    return SizedBox(
+      height: 34,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: List.generate(34, (index) {
+          final a = math.sin((index * 0.54) + phase).abs();
+          final b = math.sin((index * 0.23) - (phase * 1.35)).abs();
+          final height = 5.0 + (26 * ((a * 0.68) + (b * 0.32)));
+          return Expanded(
+            child: Align(
+              child: Container(
+                margin: const EdgeInsets.symmetric(horizontal: 0.8),
+                height: height,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(99),
+                  gradient: const LinearGradient(
+                    begin: Alignment.bottomCenter,
+                    end: Alignment.topCenter,
+                    colors: [Color(0xFF7A8CFF), Color(0xFF5BE2FF)],
+                  ),
+                ),
+              ),
+            ),
+          );
+        }),
+      ),
     );
   }
 }
@@ -460,13 +822,42 @@ class _CygnusBar extends StatelessWidget {
               ),
             ),
           ),
-          IconButton(
-            tooltip: voiceConversation ? 'End voice conversation' : 'Voice conversation',
-            onPressed: voiceAvailable ? onVoiceConversation : null,
-            icon: Icon(
-              voiceConversation ? Icons.call_end_rounded : Icons.multitrack_audio_rounded,
-              size: 21,
-              color: voiceConversation ? AppTheme.red : AppTheme.emeraldSoft,
+          Tooltip(
+            message: voiceConversation ? 'End live interaction' : 'Start live interaction',
+            child: InkWell(
+              onTap: voiceAvailable ? onVoiceConversation : null,
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
+                decoration: BoxDecoration(
+                  color: (voiceConversation ? AppTheme.red : const Color(0xFF5F75FF))
+                      .withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: (voiceConversation ? AppTheme.red : const Color(0xFF7193FF))
+                        .withValues(alpha: 0.28),
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      voiceConversation ? Icons.call_end_rounded : Icons.graphic_eq_rounded,
+                      size: 18,
+                      color: voiceConversation ? AppTheme.red : const Color(0xFF8FC9FF),
+                    ),
+                    const SizedBox(width: 5),
+                    Text(
+                      voiceConversation ? 'End' : 'Live',
+                      style: TextStyle(
+                        color: voiceConversation ? AppTheme.red : const Color(0xFFAED7FF),
+                        fontSize: 9.5,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
           IconButton(
@@ -1024,12 +1415,14 @@ class _VoiceStrip extends StatelessWidget {
     required this.level,
     required this.processing,
     required this.onStop,
+    required this.onCancel,
   });
 
   final String text;
   final double level;
   final bool processing;
   final Future<void> Function() onStop;
+  final Future<void> Function() onCancel;
 
   @override
   Widget build(BuildContext context) {
@@ -1107,10 +1500,16 @@ class _VoiceStrip extends StatelessWidget {
           if (!processing)
             IconButton(
               visualDensity: VisualDensity.compact,
-              tooltip: 'Finish voice input',
+              tooltip: 'Finish and send',
               onPressed: onStop,
               icon: const Icon(Icons.stop_circle_rounded, color: AppTheme.red, size: 26),
             ),
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            tooltip: 'Cancel voice input',
+            onPressed: onCancel,
+            icon: const Icon(Icons.close_rounded, color: AppTheme.muted, size: 22),
+          ),
         ],
       ),
     );

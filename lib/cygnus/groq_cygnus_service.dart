@@ -183,14 +183,33 @@ class GroqCygnusService {
   List<Map<String, dynamic>> _conversationMessages(
     List<CygnusMessage> conversation,
   ) {
+    String? contentFor(CygnusMessage message) {
+      if (message.kind == 'text') return message.text;
+      if (message.kind == 'image' && message.role == 'user') {
+        return '[The user uploaded a leaf image for local Plant Health analysis.]';
+      }
+      if (message.kind == 'leaf_result' && message.role == 'assistant') {
+        final p = message.payload;
+        final crop = p['crop']?.toString() ?? 'Plant';
+        final condition = p['condition']?.toString() ?? 'Unknown condition';
+        final confidence = (p['confidence'] as num?)?.toDouble();
+        final pct = confidence == null ? 'unknown' : '${(confidence * 100).toStringAsFixed(0)}%';
+        final treatment = _stringList(p['treatment']).take(4).join('; ');
+        final prevention = _stringList(p['prevention']).take(4).join('; ');
+        final symptoms = _stringList(p['symptoms']).take(4).join('; ');
+        return '[Local Plant Health result — crop: $crop; condition: $condition; confidence: $pct; symptoms: $symptoms; treatment: $treatment; prevention: $prevention.]';
+      }
+      return null;
+    }
+
     final eligible = conversation
-        .where((message) =>
-            message.kind == 'text' &&
-            (message.role == 'user' || message.role == 'assistant'))
+        .where((message) => message.role == 'user' || message.role == 'assistant')
+        .map((message) => (message: message, content: contentFor(message)))
+        .where((item) => item.content != null && item.content!.trim().isNotEmpty)
         .toList(growable: false);
 
-    final recent = eligible.length > 16
-        ? eligible.sublist(eligible.length - 16)
+    final recent = eligible.length > 20
+        ? eligible.sublist(eligible.length - 20)
         : eligible;
 
     final result = <Map<String, dynamic>>[];
@@ -199,8 +218,6 @@ class GroqCygnusService {
 
     void flush() {
       if (lastRole == null || buffer.isEmpty) return;
-      // Groq/OpenAI chat histories should begin with a user message. Skip the
-      // initial welcome assistant message when rebuilding a session.
       if (lastRole == 'assistant' && result.isEmpty) {
         buffer.clear();
         return;
@@ -212,15 +229,22 @@ class GroqCygnusService {
       buffer.clear();
     }
 
-    for (final message in recent) {
+    for (final item in recent) {
+      final message = item.message;
+      final content = item.content!;
       if (message.role != lastRole) {
         flush();
         lastRole = message.role;
       }
-      buffer.add(message.text);
+      buffer.add(content);
     }
     flush();
     return result;
+  }
+
+  List<String> _stringList(Object? value) {
+    if (value is List) return value.map((e) => e.toString()).toList(growable: false);
+    return const <String>[];
   }
 
   Map<String, Object?> _decodeArguments(String raw) {

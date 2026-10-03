@@ -39,10 +39,11 @@ class CygnusController extends ChangeNotifier {
   bool _initialized = false;
   bool _busy = false;
   bool _loadingSession = false;
-  bool _voiceReply = true;
+  bool _voiceReply = false;
   bool _listening = false;
   bool _voiceConversation = false;
   bool _voiceProcessing = false;
+  bool _speaking = false;
   double _voiceLevel = 0;
   String _voiceDraft = '';
   String _languageCode = 'en';
@@ -63,6 +64,7 @@ class CygnusController extends ChangeNotifier {
   bool get voiceConversation => _voiceConversation;
   bool get voiceAvailable => _voice.available;
   bool get voiceProcessing => _voiceProcessing;
+  bool get speaking => _speaking;
   double get voiceLevel => _voiceLevel;
   String get voiceDraft => _voiceDraft;
   String get languageCode => _languageCode;
@@ -124,6 +126,7 @@ class CygnusController extends ChangeNotifier {
       _messages
         ..clear()
         ..addAll(await _store.loadMessages(id));
+      _restoreLeafContextFromMessages();
       final match = _sessions.where((s) => s.id == id);
       if (match.isNotEmpty) _languageCode = match.first.languageCode;
     } finally {
@@ -167,9 +170,31 @@ class CygnusController extends ChangeNotifier {
     if (text.isEmpty || _busy) return;
     if (_sessionId == null) await newChat();
 
+    final requestedLanguage = _explicitLanguageRequest(text);
+    if (requestedLanguage != null && requestedLanguage != _languageCode) {
+      await setLanguage(requestedLanguage);
+    }
+
     final user = _userMessage(text);
     await _append(user);
     await _ensureSessionTitle(text);
+
+    final scopeReply = _localScopeReply(text);
+    if (scopeReply != null) {
+      await _append(_assistantMessage(scopeReply));
+      if (fromVoice) await _handleVoiceReply(scopeReply);
+      return;
+    }
+
+    // Keep follow-up questions tied to the exact leaf diagnosis from this
+    // conversation. This avoids generic advice after the user asks things like
+    // "preventive measures?" or "how do I treat this?".
+    final leafReply = _leafContextReply(text);
+    if (leafReply != null) {
+      await _append(_assistantMessage(leafReply));
+      if (fromVoice) await _handleVoiceReply(leafReply);
+      return;
+    }
 
     // Fast deterministic path for explicit immediate motor commands. This
     // reduces latency/quota usage and guarantees that a clear request such as
@@ -179,9 +204,7 @@ class CygnusController extends ChangeNotifier {
     final fastReply = await _tryFastMotorCommand(text);
     if (fastReply != null) {
       await _append(_assistantMessage(fastReply));
-      if (_voiceReply && fromVoice) {
-        await _voice.speak(fastReply, _languageCode);
-      }
+      if (fromVoice) await _handleVoiceReply(fastReply);
       return;
     }
 
@@ -189,6 +212,7 @@ class CygnusController extends ChangeNotifier {
     _error = null;
     notifyListeners();
 
+    String? replyForVoice;
     try {
       final model = _modelFor(text);
       final reasoning = _reasoningEffortFor(text);
@@ -201,26 +225,191 @@ class CygnusController extends ChangeNotifier {
         reasoningEffort: reasoning,
       );
 
-      final assistant = _assistantMessage(reply);
-      await _append(assistant);
-
-      if (_voiceReply && fromVoice) {
-        await _voice.speak(reply, _languageCode);
-      }
+      await _append(_assistantMessage(reply));
+      replyForVoice = reply;
     } catch (error, stack) {
       debugPrint('Cygnus request failed: $error\n$stack');
       _error = _friendlyAiError(error);
-      final assistant = _assistantMessage(_error!);
-      await _append(assistant);
+      await _append(_assistantMessage(_error!));
+      replyForVoice = _error;
     } finally {
       _busy = false;
       notifyListeners();
-      if (fromVoice && _voiceConversation && mountedSafe) {
-        unawaited(Future<void>.delayed(const Duration(milliseconds: 350), () async {
-          if (_voiceConversation && !_busy) await startVoiceInput(keepConversation: true);
-        }));
+    }
+
+    if (fromVoice && replyForVoice != null && mountedSafe) {
+      await _handleVoiceReply(replyForVoice);
+    }
+  }
+
+  Future<void> _handleVoiceReply(String reply) async {
+    if (_disposed) return;
+
+    // Normal microphone input behaves like voice typing. It never forces an
+    // audio answer unless the user explicitly enabled voice replies.
+    if (!_voiceConversation) {
+      if (_voiceReply) await _voice.speak(reply, _languageCode);
+      _voiceDraft = '';
+      notifyListeners();
+      return;
+    }
+
+    if (!_voiceConversation) return;
+    final outcome = await _voice.speakInteractive(
+      reply,
+      _languageCode,
+      onSpeaking: (speaking) {
+        if (_disposed) return;
+        _speaking = speaking;
+        notifyListeners();
+      },
+      onBargeIn: () async {
+        if (_disposed || !_voiceConversation) return;
+        _speaking = false;
+        notifyListeners();
+        await startVoiceInput(keepConversation: true, stopCurrentSpeech: false);
+      },
+    );
+
+    if (_disposed || !_voiceConversation) return;
+    _speaking = false;
+    notifyListeners();
+    if (outcome != CygnusSpeechOutcome.interrupted && !_listening && !_voiceProcessing) {
+      await startVoiceInput(keepConversation: true, stopCurrentSpeech: false);
+    }
+  }
+
+  String? _explicitLanguageRequest(String text) {
+    final value = text.toLowerCase();
+    final asksToSwitch = RegExp(
+      r'\b(pesu|pesunga|sollu|solunga|speak|talk|reply|language|bolo|baat|batao|parayu|mathadu|helu)\b',
+      caseSensitive: false,
+    ).hasMatch(value) ||
+        value.contains('பேசு') ||
+        value.contains('சொல்லு') ||
+        value.contains('बोल') ||
+        value.contains('बताओ') ||
+        value.contains('പറയ') ||
+        value.contains('ಸೇಳು') ||
+        value.contains('ಹೇಳು');
+
+    if (!asksToSwitch) return null;
+    if (value.contains('tamil') || value.contains('தமிழ்')) return 'ta';
+    if (value.contains('english')) return 'en';
+    if (value.contains('hindi') || value.contains('हिन्दी') || value.contains('हिंदी')) return 'hi';
+    if (value.contains('malayalam') || value.contains('മലയാളം')) return 'ml';
+    if (value.contains('kannada') || value.contains('ಕನ್ನಡ')) return 'kn';
+    return null;
+  }
+
+  String? _localScopeReply(String text) {
+    final value = text.toLowerCase();
+    final coding = RegExp(
+      r'\b(write|create|generate|give|show|make|build)\b.{0,40}\b(python|javascript|java|c\+\+|c#|sql|html|css|flutter code|dart code|program|source code|script)\b',
+      caseSensitive: false,
+    ).hasMatch(value);
+    final genericCoding = RegExp(
+      r'\b(python|javascript|java|c\+\+|c#)\b.{0,30}\b(code|program|script)\b',
+      caseSensitive: false,
+    ).hasMatch(value);
+    if (coding || genericCoding) {
+      return _languageCode == 'ta'
+          ? 'நான் AGRO CONNECT farm assistant. Farm status, motors, plans, plant health மற்றும் app controls பற்றி உதவலாம்; general programming/code requests-க்கு பதில் தர மாட்டேன்.'
+          : 'I’m focused on AGRO CONNECT. I can help with farm status, motors, plans, plant health and app controls, but not general programming or code requests.';
+    }
+    return null;
+  }
+
+  void _restoreLeafContextFromMessages() {
+    _lastLeafResult = null;
+    for (final message in _messages.reversed) {
+      if (message.kind == 'leaf_result' && message.payload.isNotEmpty) {
+        _lastLeafResult = Map<String, dynamic>.from(message.payload);
+        break;
       }
     }
+  }
+
+  String? _leafContextReply(String text) {
+    final result = _lastLeafResult;
+    if (result == null) return null;
+
+    final value = text.toLowerCase().trim();
+    final prevention = RegExp(
+      r'prevent|prevention|preventive|avoid|stop.*spread|varama|varaama|thadukka|tadukka|தடுப்பு|தடுக்க|வராமல்|रोकथाम|बचाव|प्रतिरोध|തടയ|പ്രതിരോധ|ತಡೆ|ತಡೆಗಟ್ಟ',
+      caseSensitive: false,
+    ).hasMatch(value);
+    final treatment = RegExp(
+      r'treat|treatment|care|cure|medicine|remedy|marundhu|marunthu|sari.*panna|சிகிச்சை|மருந்து|उपचार|इलाज|ചികിത്സ|ഔഷധ|ಚಿಕಿತ್ಸೆ|ಔಷಧ',
+      caseSensitive: false,
+    ).hasMatch(value);
+    final symptoms = RegExp(
+      r'symptom|sign|identify|how.*know|அறிகுறி|लक्षण|ലക്ഷണം|ಲಕ್ಷಣ',
+      caseSensitive: false,
+    ).hasMatch(value);
+    final refersToLeaf = prevention || treatment || symptoms || RegExp(
+      r'\b(this|that|it|leaf|plant|disease|result|adha|adhu|andha|intha|indha|idhoda|adhoda)\b',
+      caseSensitive: false,
+    ).hasMatch(value);
+
+    if (!refersToLeaf) return null;
+
+    final label = result['label']?.toString();
+    if (label == null || label.isEmpty) return null;
+    final advice = PlantKnowledge.forLabel(
+      label,
+      LeafLanguageInfo.fromCode(_languageCode),
+    );
+    final confidence = (result['confidence'] as num?)?.toDouble();
+
+    String bullets(Iterable<String> items) => items.map((e) => '• $e').join('\n');
+    final heading = '${advice.crop} · ${advice.condition}';
+    final confidenceLine = confidence == null
+        ? ''
+        : '\nConfidence: ${(confidence * 100).toStringAsFixed(0)}%';
+
+    if (prevention) {
+      return '$heading$confidenceLine\n\n${_leafSectionTitle('prevention')}\n${bullets(advice.prevention)}';
+    }
+    if (treatment) {
+      return '$heading$confidenceLine\n\n${_leafSectionTitle('treatment')}\n${bullets(advice.treatment)}\n\n${advice.note}';
+    }
+    if (symptoms) {
+      return '$heading$confidenceLine\n\n${_leafSectionTitle('symptoms')}\n${bullets(advice.symptoms)}';
+    }
+
+    return '$heading$confidenceLine\n\n${_leafSectionTitle('treatment')}\n${bullets(advice.treatment.take(2))}\n\n${_leafSectionTitle('prevention')}\n${bullets(advice.prevention.take(2))}';
+  }
+
+  String _leafSectionTitle(String section) {
+    const titles = <String, Map<String, String>>{
+      'en': <String, String>{
+        'prevention': 'Prevention',
+        'treatment': 'Care & treatment',
+        'symptoms': 'What to look for',
+      },
+      'ta': <String, String>{
+        'prevention': 'தடுப்பு முறைகள்',
+        'treatment': 'பராமரிப்பு & சிகிச்சை',
+        'symptoms': 'கவனிக்க வேண்டிய அறிகுறிகள்',
+      },
+      'hi': <String, String>{
+        'prevention': 'रोकथाम',
+        'treatment': 'देखभाल और उपचार',
+        'symptoms': 'ध्यान देने योग्य लक्षण',
+      },
+      'ml': <String, String>{
+        'prevention': 'പ്രതിരോധം',
+        'treatment': 'പരിചരണവും ചികിത്സയും',
+        'symptoms': 'ശ്രദ്ധിക്കേണ്ട ലക്ഷണങ്ങൾ',
+      },
+      'kn': <String, String>{
+        'prevention': 'ತಡೆಗಟ್ಟುವಿಕೆ',
+        'treatment': 'ಆರೈಕೆ ಮತ್ತು ಚಿಕಿತ್ಸೆ',
+        'symptoms': 'ಗಮನಿಸಬೇಕಾದ ಲಕ್ಷಣಗಳು',
+      },
+    };
+    return titles[_languageCode]?[section] ?? titles['en']![section]!;
   }
 
   // ChangeNotifier has no public mounted flag; this protects delayed voice
@@ -282,10 +471,15 @@ class CygnusController extends ChangeNotifier {
     }
   }
 
-  Future<void> startVoiceInput({bool keepConversation = false}) async {
+  Future<void> startVoiceInput({
+    bool keepConversation = false,
+    bool stopCurrentSpeech = true,
+  }) async {
     if (_busy || _listening || _voiceProcessing || _disposed) return;
     if (!keepConversation) _voiceConversation = false;
-    await _voice.stopSpeaking();
+    if (stopCurrentSpeech) await _voice.stopSpeaking();
+
+    _speaking = false;
     _voiceDraft = '';
     _voiceLevel = 0;
     _voiceProcessing = false;
@@ -306,7 +500,7 @@ class CygnusController extends ChangeNotifier {
         _voiceProcessing = false;
         _voiceLevel = 0;
         notifyListeners();
-        unawaited(sendText(text, fromVoice: true));
+        unawaited(_submitVoiceTranscript(text));
       },
       onError: (message) {
         if (_disposed) return;
@@ -315,7 +509,6 @@ class CygnusController extends ChangeNotifier {
         _listening = false;
         _voiceProcessing = false;
         _voiceLevel = 0;
-        if (keepConversation) _voiceConversation = false;
         notifyListeners();
       },
       onLevel: (level) {
@@ -333,32 +526,73 @@ class CygnusController extends ChangeNotifier {
 
     if (!_voice.listening && !_voice.processing && _voiceDraft.isEmpty) {
       _listening = false;
-      if (keepConversation) _voiceConversation = false;
       notifyListeners();
     }
   }
 
+  Future<void> _submitVoiceTranscript(String text) async {
+    if (_disposed) return;
+    final transcript = text.trim();
+    _voiceDraft = '';
+    _voiceProcessing = false;
+    _listening = false;
+    _voiceLevel = 0;
+    notifyListeners();
+    if (transcript.isEmpty) return;
+    await sendText(transcript, fromVoice: true);
+  }
+
   Future<void> stopVoiceInput() async {
-    _voiceConversation = false;
     if (_voice.listening) {
       _voiceProcessing = true;
       _listening = false;
       _voiceDraft = 'Understanding your voice…';
       notifyListeners();
       await _voice.finishListening();
-    } else {
-      _listening = false;
-      _voiceProcessing = false;
-      _voiceLevel = 0;
-      notifyListeners();
+      return;
+    }
+    _listening = false;
+    _voiceProcessing = false;
+    _voiceLevel = 0;
+    _voiceDraft = '';
+    notifyListeners();
+  }
+
+  Future<void> cancelVoiceInput() async {
+    await _voice.cancelListening();
+    _listening = false;
+    _voiceProcessing = false;
+    _voiceLevel = 0;
+    _voiceDraft = '';
+    notifyListeners();
+  }
+
+  Future<void> interruptAssistant() async {
+    if (!_voiceConversation) return;
+    await _voice.stopSpeaking();
+    _speaking = false;
+    notifyListeners();
+    if (!_listening && !_voiceProcessing && !_busy) {
+      await startVoiceInput(keepConversation: true, stopCurrentSpeech: false);
     }
   }
 
   Future<void> startVoiceConversation() async {
     if (_disposed || _busy || _voiceProcessing) return;
+    await _voice.cancelListening();
+    await _voice.stopSpeaking();
+    _listening = false;
+    _voiceProcessing = false;
+    _speaking = false;
+    _voiceDraft = '';
+    _voiceLevel = 0;
+
+    // Live interaction is always a fresh conversation, matching the user's
+    // expectation that voice mode has its own clean session transcript.
+    await newChat();
     _voiceConversation = true;
     notifyListeners();
-    await startVoiceInput(keepConversation: true);
+    await startVoiceInput(keepConversation: true, stopCurrentSpeech: false);
   }
 
   Future<void> stopVoiceConversation() async {
@@ -367,6 +601,7 @@ class CygnusController extends ChangeNotifier {
     await _voice.stopSpeaking();
     _listening = false;
     _voiceProcessing = false;
+    _speaking = false;
     _voiceLevel = 0;
     _voiceDraft = '';
     notifyListeners();
@@ -408,10 +643,24 @@ class CygnusController extends ChangeNotifier {
     await _refreshSessions();
   }
 
+  String _leafPromptContext() {
+    final result = _lastLeafResult;
+    if (result == null) return 'none';
+    final confidence = (result['confidence'] as num?)?.toDouble();
+    final pct = confidence == null
+        ? 'unknown'
+        : '${(confidence * 100).toStringAsFixed(0)}%';
+    return 'label=${result['label']}; crop=${result['crop']}; condition=${result['condition']}; confidence=$pct';
+  }
+
   String _systemInstruction() {
     return '''
 You are Cygnus, the built-in intelligent farm agent for AGRO CONNECT.
 Talk naturally, briefly and action-first. Do not mention model providers, APIs, tool schemas or internal routing to the end user unless they explicitly ask a technical question. The user commonly speaks Tamil, Tanglish, English, Hindi, Malayalam or Kannada. Reply in the user's language/style unless they ask for another language. Current preferred language code: $_languageCode.
+
+STRICT SCOPE: Cygnus is not a general-purpose chatbot. Only help with AGRO CONNECT, the connected farm/device, live telemetry, motors, schedules/plans, plant health/leaf diagnosis, treatment/prevention guidance already available in the app, app navigation, and practical farming questions directly related to these features. Politely refuse unrelated requests such as programming/code generation, essays, homework, trivia, general writing, unrelated technology support, politics, entertainment, or general knowledge. Never write Python/Java/JavaScript/Dart/Flutter code for the user. Redirect them to what Cygnus can do inside AGRO CONNECT.
+
+VOICE STYLE: In voice/live interaction, keep replies concise and conversational. If the user asks to speak in Tamil, English, Hindi, Malayalam or Kannada, immediately use that language for subsequent replies until changed again. Tanglish is valid user input; understand it naturally without correcting the user.
 
 You can read live farm state and operate only through the provided tools. Never invent temperature, humidity, soil, water, motor states, schedule data, or execution results. Use tools whenever live/current/app-specific information is requested.
 
@@ -429,7 +678,8 @@ For "live" requests, call get_current_status with live=true. For trend/history r
 
 When the user says "adha", "that one", "same motor", or similar, use conversation context. Do not expose internal MQTT/Firebase implementation details unless the user explicitly asks technical questions.
 
-Leaf photos are analyzed locally by the Plant Health model. Use get_last_leaf_result when the user asks follow-up questions about the latest leaf diagnosis. Do not prescribe restricted medicines or give unsafe pesticide dosing; present the bundled care guidance and advise following local product labels/agronomy guidance for chemical treatment.
+Leaf photos are analyzed locally by the Plant Health model. Use get_last_leaf_result when the user asks follow-up questions about the latest leaf diagnosis. Words such as "this leaf", "that result", "preventive measures", "treatment", "care", or pronouns such as "adha/adhu" refer to the latest leaf result unless the user clearly changes topic. Never replace the scanned diagnosis with generic advice. Do not prescribe restricted medicines or give unsafe pesticide dosing; present the bundled care guidance and advise following local product labels/agronomy guidance for chemical treatment.
+Latest local leaf context: ${_leafPromptContext()}.
 
 If a pending action exists, the user can confirm it naturally with phrases such as yes, confirm, do it, pannidu, okay, or cancel it with no/cancel/venam.
 Current pending action: ${_pendingAction == null ? 'none' : '${_pendingAction!.title} — ${_pendingAction!.details}'}.

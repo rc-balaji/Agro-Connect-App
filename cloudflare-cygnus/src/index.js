@@ -41,7 +41,7 @@ export default {
         ok: true,
         service: 'cygnus-gateway',
         models: [env.FAST_MODEL || 'openai/gpt-oss-20b', env.PRIMARY_MODEL || 'openai/gpt-oss-120b'],
-        voiceModel: env.STT_MODEL || 'whisper-large-v3-turbo',
+        voiceModel: env.STT_MODEL || 'whisper-large-v3',
         authRequired: env.REQUIRE_FIREBASE_AUTH === 'true',
       });
     }
@@ -162,16 +162,16 @@ async function transcribeVoice(request, env) {
 
   const languageCode = String(incoming.get('language_code') || 'en').toLowerCase();
   const prompts = {
-    ta: 'Tamil and English mixed smart-farming conversation. Motor 1, Motor 2, Motor 3, temperature, humidity, soil moisture, water level, schedule, Cygnus, Agro Connect. Natural Tanglish phrases include: motor 2 start pannuda, temperature enna, naalaikku 7 mani, off pannidu.',
-    hi: 'Hindi and English mixed smart-farming conversation. Motor 1, Motor 2, Motor 3, temperature, humidity, soil moisture, water level, schedule, Cygnus, Agro Connect.',
-    ml: 'Malayalam and English mixed smart-farming conversation. Motor 1, Motor 2, Motor 3, temperature, humidity, soil moisture, water level, schedule, Cygnus, Agro Connect.',
-    kn: 'Kannada and English mixed smart-farming conversation. Motor 1, Motor 2, Motor 3, temperature, humidity, soil moisture, water level, schedule, Cygnus, Agro Connect.',
-    en: 'Conversational Indian English and mixed local-language smart-farming commands. Motor 1, Motor 2, Motor 3, temperature, humidity, soil moisture, water level, schedule, Cygnus, Agro Connect.',
+    ta: 'Tamil, Tanglish and Indian English farm-control speech. Preserve the words actually spoken. Common terms: Cygnus, Agro Connect, motor one/two/three, rendu, moonu, start pannuda, off pannidu, ippo, adha, naalaikku, mani, evlo neram, temperature, humidity, soil moisture, water level, schedule, plan, leaf, treatment, prevention.',
+    hi: 'Hindi, Hinglish and Indian English farm-control speech. Preserve the words actually spoken. Common terms: Cygnus, Agro Connect, motor 1/2/3, chalu karo, band karo, abhi, kal, temperature, humidity, soil moisture, water level, schedule, plant health, treatment, prevention.',
+    ml: 'Malayalam, Manglish and Indian English farm-control speech. Preserve the words actually spoken. Common terms: Cygnus, Agro Connect, motor 1/2/3, on, off, ippo, nale, temperature, humidity, soil moisture, water level, schedule, plant health, treatment, prevention.',
+    kn: 'Kannada, Kanglish and Indian English farm-control speech. Preserve the words actually spoken. Common terms: Cygnus, Agro Connect, motor 1/2/3, on, off, ivaga, nale, temperature, humidity, soil moisture, water level, schedule, plant health, treatment, prevention.',
+    en: 'Indian English plus Tamil-English Tanglish farm-control speech. Preserve the words actually spoken instead of translating them. Common phrases: motor 2 start pannuda, adha off pannidu, current temperature enna, naalaikku 7 mani, rendu minutes, evlo neram, soil moisture, water level, schedule, Cygnus, Agro Connect, leaf treatment, preventive measures.',
   };
 
   const form = new FormData();
   form.append('file', file, file.name || 'cygnus-voice.m4a');
-  form.append('model', env.STT_MODEL || 'whisper-large-v3-turbo');
+  form.append('model', env.STT_MODEL || 'whisper-large-v3');
   form.append('response_format', 'json');
   form.append('temperature', '0');
   form.append('prompt', prompts[languageCode] || prompts.en);
@@ -205,7 +205,7 @@ async function transcribeVoice(request, env) {
   }
 
   const textValue = String(decoded?.text || '').trim();
-  return json({ ok: true, text: textValue, model: env.STT_MODEL || 'whisper-large-v3-turbo' });
+  return json({ ok: true, text: textValue, model: env.STT_MODEL || 'whisper-large-v3' });
 }
 
 async function verifyFirebaseToken(idToken, env) {

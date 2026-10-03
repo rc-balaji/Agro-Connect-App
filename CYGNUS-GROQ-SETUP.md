@@ -56,9 +56,9 @@ flutter build apk --release \
 
 The app defaults to `https://agro-connect-cygnus.rcbalaji2003.workers.dev`.
 
-## Voice recognition v2 (Tanglish + multilingual)
+## Live voice v3 (Tanglish + multilingual)
 
-This build adds `POST /v1/transcribe` to the same Cloudflare Worker and uses Groq `whisper-large-v3-turbo` for voice-to-text. The Flutter app records a short mono AAC clip, shows a live waveform, uploads it with the existing Firebase ID token, and sends the resulting transcript through the normal Cygnus agent/tool flow.
+This build adds `POST /v1/transcribe` to the same Cloudflare Worker and uses Groq `whisper-large-v3` for higher multilingual accuracy. The Flutter app records a short mono AAC clip, shows live listening/speaking waveforms, uploads it with the existing Firebase ID token, and sends the resulting transcript through the normal Cygnus agent/tool flow. Live Interaction supports Finish, Cancel, End, and interruption while Cygnus is speaking.
 
 After updating this project, redeploy the Worker:
 

@@ -67,8 +67,10 @@ For Android CI, add the GitHub Actions secret `GOOGLE_SERVICES_JSON`. The reposi
 
 GitHub Actions runs package install, launcher icon generation, analyzer, tests, APK and AAB builds. The existing JVM compatibility patch and notification/desugaring setup remain included.
 
-## Cygnus voice v2
+## Cygnus Live voice v3
 
-Cygnus voice input now records a short high-quality mono clip and sends it through the authenticated Cloudflare gateway to Groq `whisper-large-v3-turbo`. The gateway keeps `GROQ_API_KEY` off-device. Mixed Tamil/English (Tanglish) is auto-detected and vocabulary hints include AGRO CONNECT motor/sensor terminology. The chat shows a live microphone waveform while recording and a separate transcription state.
+Cygnus voice input now records a short high-quality mono clip and sends it through the authenticated Cloudflare gateway to Groq `whisper-large-v3`. The gateway keeps `GROQ_API_KEY` off-device. Mixed Tamil/English (Tanglish) is handled with farm-specific transcription hints. Live Interaction opens a fresh chat, shows listening/speaking waveforms and the live transcript, supports Finish/Cancel/End controls, and allows the user to interrupt a spoken reply. Normal microphone dictation does not force audio replies unless Voice Replies is enabled.
 
-Redeploy `cloudflare-cygnus` after this update because `/v1/transcribe` is new.
+Leaf scan context is now persisted inside the conversation: follow-ups such as `Preventive measures?`, `how do I treat this?`, or `adha prevent panna enna pannanum?` stay attached to the exact scanned diagnosis, including after reopening that chat.
+
+Redeploy `cloudflare-cygnus` after this update because the speech-recognition prompt and default STT model changed.
