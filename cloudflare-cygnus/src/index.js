@@ -1,4 +1,5 @@
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
+const GROQ_TRANSCRIBE_URL = 'https://api.groq.com/openai/v1/audio/transcriptions';
 const ALLOWED_MODELS = new Set([
   'openai/gpt-oss-120b',
   'openai/gpt-oss-20b',
@@ -40,14 +41,14 @@ export default {
         ok: true,
         service: 'cygnus-gateway',
         models: [env.FAST_MODEL || 'openai/gpt-oss-20b', env.PRIMARY_MODEL || 'openai/gpt-oss-120b'],
+        voiceModel: env.STT_MODEL || 'whisper-large-v3-turbo',
         authRequired: env.REQUIRE_FIREBASE_AUTH === 'true',
       });
     }
 
-    if (request.method !== 'POST' || url.pathname !== '/v1/chat') {
+    if (request.method !== 'POST') {
       return error(404, 'not_found', 'Route not found.');
     }
-
     if (!env.GROQ_API_KEY) {
       return error(503, 'gateway_not_configured', 'GROQ_API_KEY is not configured.');
     }
@@ -58,6 +59,13 @@ export default {
       if (!token) return error(401, 'unauthorized', 'Missing app session token.');
       const verified = await verifyFirebaseToken(token, env);
       if (!verified) return error(401, 'unauthorized', 'Invalid app session token.');
+    }
+
+    if (url.pathname === '/v1/transcribe') {
+      return transcribeVoice(request, env);
+    }
+    if (url.pathname !== '/v1/chat') {
+      return error(404, 'not_found', 'Route not found.');
     }
 
     const contentLength = Number(request.headers.get('content-length') || '0');
@@ -83,7 +91,6 @@ export default {
     if (!messages.length) return error(400, 'invalid_messages', 'No valid messages provided.');
 
     const tools = sanitizeTools(body.tools);
-
     const payload = {
       model,
       messages,
@@ -95,7 +102,6 @@ export default {
       temperature: 0.2,
       max_completion_tokens: 700,
     };
-
     Object.keys(payload).forEach((key) => payload[key] === undefined && delete payload[key]);
 
     let upstream;
@@ -126,22 +132,81 @@ export default {
       if (upstream.status === 429) {
         return error(429, 'rate_limit', 'Cygnus is busy right now. Try again shortly.');
       }
-      return error(
-        upstream.status >= 500 ? 502 : 400,
-        'provider_error',
-        providerMessage,
-      );
+      return error(upstream.status >= 500 ? 502 : 400, 'provider_error', providerMessage);
     }
 
     return new Response(JSON.stringify(decoded), {
       status: 200,
-      headers: {
-        ...corsHeaders,
-        'Content-Type': 'application/json; charset=utf-8',
-      },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   },
 };
+
+async function transcribeVoice(request, env) {
+  const contentLength = Number(request.headers.get('content-length') || '0');
+  if (contentLength > 12_000_000) {
+    return error(413, 'audio_too_large', 'Voice message is too large.');
+  }
+
+  let incoming;
+  try {
+    incoming = await request.formData();
+  } catch (_) {
+    return error(400, 'invalid_audio', 'Invalid voice upload.');
+  }
+
+  const file = incoming.get('file');
+  if (!(file instanceof File) || file.size === 0) {
+    return error(400, 'missing_audio', 'No voice recording was provided.');
+  }
+
+  const languageCode = String(incoming.get('language_code') || 'en').toLowerCase();
+  const prompts = {
+    ta: 'Tamil and English mixed smart-farming conversation. Motor 1, Motor 2, Motor 3, temperature, humidity, soil moisture, water level, schedule, Cygnus, Agro Connect. Natural Tanglish phrases include: motor 2 start pannuda, temperature enna, naalaikku 7 mani, off pannidu.',
+    hi: 'Hindi and English mixed smart-farming conversation. Motor 1, Motor 2, Motor 3, temperature, humidity, soil moisture, water level, schedule, Cygnus, Agro Connect.',
+    ml: 'Malayalam and English mixed smart-farming conversation. Motor 1, Motor 2, Motor 3, temperature, humidity, soil moisture, water level, schedule, Cygnus, Agro Connect.',
+    kn: 'Kannada and English mixed smart-farming conversation. Motor 1, Motor 2, Motor 3, temperature, humidity, soil moisture, water level, schedule, Cygnus, Agro Connect.',
+    en: 'Conversational Indian English and mixed local-language smart-farming commands. Motor 1, Motor 2, Motor 3, temperature, humidity, soil moisture, water level, schedule, Cygnus, Agro Connect.',
+  };
+
+  const form = new FormData();
+  form.append('file', file, file.name || 'cygnus-voice.m4a');
+  form.append('model', env.STT_MODEL || 'whisper-large-v3-turbo');
+  form.append('response_format', 'json');
+  form.append('temperature', '0');
+  form.append('prompt', prompts[languageCode] || prompts.en);
+  // Language is intentionally not forced. Tanglish and other mixed-language
+  // utterances are better handled with Whisper auto-detection plus vocabulary hints.
+
+  let upstream;
+  try {
+    upstream = await fetch(GROQ_TRANSCRIBE_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${env.GROQ_API_KEY}`,
+        'Accept': 'application/json',
+      },
+      body: form,
+    });
+  } catch (_) {
+    return error(502, 'voice_unreachable', 'Voice recognition could not be reached.');
+  }
+
+  const raw = await upstream.text();
+  let decoded = null;
+  try { decoded = JSON.parse(raw); } catch (_) {}
+
+  if (!upstream.ok) {
+    const message = decoded?.error?.message || 'Voice recognition failed.';
+    if (upstream.status === 429) {
+      return error(429, 'voice_rate_limit', 'Voice recognition is busy. Try again shortly.');
+    }
+    return error(upstream.status >= 500 ? 502 : 400, 'voice_provider_error', message);
+  }
+
+  const textValue = String(decoded?.text || '').trim();
+  return json({ ok: true, text: textValue, model: env.STT_MODEL || 'whisper-large-v3-turbo' });
+}
 
 async function verifyFirebaseToken(idToken, env) {
   if (!env.FIREBASE_API_KEY) return false;

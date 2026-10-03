@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -28,6 +30,8 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final GlobalKey<LeafAiPageState> _leafAiKey = GlobalKey<LeafAiPageState>();
   late final List<Widget> _pages;
+  Timer? _cygnusNudgeTimer;
+  bool _showCygnusNudge = false;
 
   static const _labels = [
     'Home',
@@ -59,6 +63,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
       context.read<PlanController>().initialize();
       context.read<ForegroundMonitorController>().initialize();
       context.read<CygnusController>().initialize();
+      _showHomeCygnusNudge();
     });
   }
 
@@ -74,12 +79,23 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _cygnusNudgeTimer?.cancel();
     super.dispose();
   }
 
   void _selectPage(int value) {
     Navigator.of(context).maybePop();
     if (_index != value) setState(() => _index = value);
+    if (value == 0) _showHomeCygnusNudge();
+  }
+
+  void _showHomeCygnusNudge() {
+    _cygnusNudgeTimer?.cancel();
+    if (!mounted) return;
+    setState(() => _showCygnusNudge = true);
+    _cygnusNudgeTimer = Timer(const Duration(seconds: 8), () {
+      if (mounted) setState(() => _showCygnusNudge = false);
+    });
   }
 
   void _navigateByName(String page) {
@@ -96,6 +112,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
     final target = mapping[page.toLowerCase()];
     if (target == null || !mounted) return;
     if (_index != target) setState(() => _index = target);
+    if (target == 0) _showHomeCygnusNudge();
   }
 
   Future<void> _handleBack() async {
@@ -162,6 +179,21 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
                 onCygnus: () => _navigateByName('cygnus'),
               ),
             ),
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 260),
+              switchInCurve: Curves.easeOutBack,
+              switchOutCurve: Curves.easeIn,
+              child: (_index == 0 && _showCygnusNudge)
+                  ? _CygnusHomeNudge(
+                      key: const ValueKey('cygnus-home-nudge'),
+                      onTap: () {
+                        setState(() => _showCygnusNudge = false);
+                        _navigateByName('cygnus');
+                      },
+                      onDismiss: () => setState(() => _showCygnusNudge = false),
+                    )
+                  : const SizedBox.shrink(key: ValueKey('cygnus-home-nudge-hidden')),
+            ),
             Selector<AgroController, String?>(
               selector: (_, controller) => controller.error,
               builder: (context, error, _) {
@@ -205,6 +237,99 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
           ],
         ),
       ),
+      ),
+    );
+  }
+}
+
+class _CygnusHomeNudge extends StatelessWidget {
+  const _CygnusHomeNudge({
+    super.key,
+    required this.onTap,
+    required this.onDismiss,
+  });
+
+  final VoidCallback onTap;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(18),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(10, 9, 6, 9),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [Color(0xFF14264B), Color(0xFF0E2B22)],
+              ),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: const Color(0xFF6D7DFF).withValues(alpha: 0.32)),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFF536DFF).withValues(alpha: 0.10),
+                  blurRadius: 20,
+                ),
+              ],
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  padding: const EdgeInsets.all(3),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: const Color(0xFF0E1936),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFF62C8FF).withValues(alpha: 0.34),
+                        blurRadius: 16,
+                        spreadRadius: 1,
+                      ),
+                    ],
+                  ),
+                  child: Image.asset(
+                    'assets/branding/cygnus_emblem.png',
+                    filterQuality: FilterQuality.high,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Text('Feel free to ask me', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w900)),
+                          SizedBox(width: 6),
+                          Icon(Icons.auto_awesome_rounded, size: 14, color: Color(0xFF7ED8FF)),
+                        ],
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        'Try “Motor 2 start pannuda” or “Temperature enna?”',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: AppTheme.muted, fontSize: 10.5, fontWeight: FontWeight.w600),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'Dismiss',
+                  onPressed: onDismiss,
+                  icon: const Icon(Icons.close_rounded, size: 17, color: AppTheme.muted),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -293,9 +418,9 @@ class _ShellHeader extends StatelessWidget {
               borderRadius: BorderRadius.circular(13),
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 180),
-                width: 38,
-                height: 38,
-                padding: const EdgeInsets.all(4),
+                width: 42,
+                height: 42,
+                padding: const EdgeInsets.all(3),
                 margin: const EdgeInsets.only(right: 7),
                 decoration: BoxDecoration(
                   color: cygnusSelected
@@ -310,8 +435,9 @@ class _ShellHeader extends StatelessWidget {
                   boxShadow: cygnusSelected
                       ? [
                           BoxShadow(
-                            color: const Color(0xFF536DFF).withValues(alpha: 0.18),
-                            blurRadius: 14,
+                            color: const Color(0xFF67B8FF).withValues(alpha: 0.34),
+                            blurRadius: 20,
+                            spreadRadius: 1,
                           ),
                         ]
                       : null,

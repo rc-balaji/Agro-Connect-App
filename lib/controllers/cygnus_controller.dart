@@ -42,6 +42,8 @@ class CygnusController extends ChangeNotifier {
   bool _voiceReply = true;
   bool _listening = false;
   bool _voiceConversation = false;
+  bool _voiceProcessing = false;
+  double _voiceLevel = 0;
   String _voiceDraft = '';
   String _languageCode = 'en';
   String? _sessionId;
@@ -60,6 +62,8 @@ class CygnusController extends ChangeNotifier {
   bool get listening => _listening;
   bool get voiceConversation => _voiceConversation;
   bool get voiceAvailable => _voice.available;
+  bool get voiceProcessing => _voiceProcessing;
+  double get voiceLevel => _voiceLevel;
   String get voiceDraft => _voiceDraft;
   String get languageCode => _languageCode;
   String? get sessionId => _sessionId;
@@ -279,29 +283,55 @@ class CygnusController extends ChangeNotifier {
   }
 
   Future<void> startVoiceInput({bool keepConversation = false}) async {
-    if (_busy || _listening || _disposed) return;
+    if (_busy || _listening || _voiceProcessing || _disposed) return;
     if (!keepConversation) _voiceConversation = false;
     await _voice.stopSpeaking();
     _voiceDraft = '';
+    _voiceLevel = 0;
+    _voiceProcessing = false;
     _listening = true;
     notifyListeners();
 
     await _voice.startListening(
       languageCode: _languageCode,
       onPartial: (text) {
+        if (_disposed) return;
         _voiceDraft = text;
         notifyListeners();
       },
-      onFinal: (text) async {
+      onFinal: (text) {
+        if (_disposed) return;
         _voiceDraft = text;
         _listening = false;
+        _voiceProcessing = false;
+        _voiceLevel = 0;
         notifyListeners();
-        await sendText(text, fromVoice: true);
+        unawaited(sendText(text, fromVoice: true));
+      },
+      onError: (message) {
+        if (_disposed) return;
+        _error = message;
+        _voiceDraft = '';
+        _listening = false;
+        _voiceProcessing = false;
+        _voiceLevel = 0;
+        if (keepConversation) _voiceConversation = false;
+        notifyListeners();
+      },
+      onLevel: (level) {
+        if (_disposed) return;
+        _voiceLevel = level.clamp(0.0, 1.0).toDouble();
+        notifyListeners();
+      },
+      onProcessing: (processing) {
+        if (_disposed) return;
+        _voiceProcessing = processing;
+        if (processing) _listening = false;
+        notifyListeners();
       },
     );
 
-    // If recognition never started, reflect the real state.
-    if (!_voice.listening && _voiceDraft.isEmpty) {
+    if (!_voice.listening && !_voice.processing && _voiceDraft.isEmpty) {
       _listening = false;
       if (keepConversation) _voiceConversation = false;
       notifyListeners();
@@ -310,13 +340,22 @@ class CygnusController extends ChangeNotifier {
 
   Future<void> stopVoiceInput() async {
     _voiceConversation = false;
-    await _voice.stopListening();
-    _listening = false;
-    notifyListeners();
+    if (_voice.listening) {
+      _voiceProcessing = true;
+      _listening = false;
+      _voiceDraft = 'Understanding your voice…';
+      notifyListeners();
+      await _voice.finishListening();
+    } else {
+      _listening = false;
+      _voiceProcessing = false;
+      _voiceLevel = 0;
+      notifyListeners();
+    }
   }
 
   Future<void> startVoiceConversation() async {
-    if (_disposed || _busy) return;
+    if (_disposed || _busy || _voiceProcessing) return;
     _voiceConversation = true;
     notifyListeners();
     await startVoiceInput(keepConversation: true);
@@ -324,9 +363,11 @@ class CygnusController extends ChangeNotifier {
 
   Future<void> stopVoiceConversation() async {
     _voiceConversation = false;
-    await _voice.stopListening();
+    await _voice.cancelListening();
     await _voice.stopSpeaking();
     _listening = false;
+    _voiceProcessing = false;
+    _voiceLevel = 0;
     _voiceDraft = '';
     notifyListeners();
   }

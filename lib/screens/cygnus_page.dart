@@ -319,9 +319,11 @@ class _CygnusPageState extends State<CygnusPage> {
                   },
                 ),
         ),
-        if (cygnus.listening || cygnus.voiceDraft.isNotEmpty)
+        if (cygnus.listening || cygnus.voiceProcessing || cygnus.voiceDraft.isNotEmpty)
           _VoiceStrip(
             text: cygnus.voiceDraft,
+            level: cygnus.voiceLevel,
+            processing: cygnus.voiceProcessing,
             onStop: cygnus.stopVoiceInput,
           ),
         _Composer(
@@ -329,6 +331,7 @@ class _CygnusPageState extends State<CygnusPage> {
           focusNode: _focus,
           busy: cygnus.busy,
           listening: cygnus.listening,
+          voiceProcessing: cygnus.voiceProcessing,
           voiceAvailable: cygnus.voiceAvailable,
           onAttach: _showAttachmentSheet,
           onSend: _send,
@@ -387,9 +390,9 @@ class _CygnusBar extends StatelessWidget {
       child: Row(
         children: [
           Container(
-            width: 46,
-            height: 46,
-            padding: const EdgeInsets.all(4),
+            width: 50,
+            height: 50,
+            padding: const EdgeInsets.all(3),
             decoration: BoxDecoration(
               color: const Color(0xFF101D39),
               borderRadius: BorderRadius.circular(15),
@@ -398,8 +401,9 @@ class _CygnusBar extends StatelessWidget {
               ),
               boxShadow: [
                 BoxShadow(
-                  color: const Color(0xFF536DFF).withValues(alpha: 0.16),
-                  blurRadius: 18,
+                  color: const Color(0xFF67B8FF).withValues(alpha: 0.30),
+                  blurRadius: 24,
+                  spreadRadius: 2,
                 ),
               ],
             ),
@@ -1015,39 +1019,138 @@ class _ThinkingBubble extends StatelessWidget {
 }
 
 class _VoiceStrip extends StatelessWidget {
-  const _VoiceStrip({required this.text, required this.onStop});
+  const _VoiceStrip({
+    required this.text,
+    required this.level,
+    required this.processing,
+    required this.onStop,
+  });
 
   final String text;
+  final double level;
+  final bool processing;
   final Future<void> Function() onStop;
 
   @override
   Widget build(BuildContext context) {
+    final normalized = level.clamp(0.0, 1.0).toDouble();
     return Container(
-      margin: const EdgeInsets.fromLTRB(12, 0, 12, 7),
-      padding: const EdgeInsets.fromLTRB(12, 8, 6, 8),
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+      padding: const EdgeInsets.fromLTRB(12, 10, 7, 10),
       decoration: BoxDecoration(
-        color: AppTheme.emerald.withValues(alpha: 0.09),
-        borderRadius: BorderRadius.circular(15),
-        border: Border.all(color: AppTheme.emerald.withValues(alpha: 0.22)),
+        gradient: LinearGradient(
+          colors: [
+            const Color(0xFF15254B).withValues(alpha: 0.96),
+            const Color(0xFF0C2A23).withValues(alpha: 0.96),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFF6D7DFF).withValues(alpha: 0.34)),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF536DFF).withValues(alpha: 0.10),
+            blurRadius: 22,
+          ),
+        ],
       ),
       child: Row(
         children: [
-          const Icon(Icons.graphic_eq_rounded, color: AppTheme.emerald, size: 20),
-          const SizedBox(width: 9),
-          Expanded(
-            child: Text(
-              text.isEmpty ? 'Listening…' : text,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+          Container(
+            width: 38,
+            height: 38,
+            padding: const EdgeInsets.all(4),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: const Color(0xFF101C3D),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFF58C7FF).withValues(alpha: 0.28),
+                  blurRadius: 15,
+                  spreadRadius: 1,
+                ),
+              ],
+            ),
+            child: Image.asset(
+              'assets/branding/cygnus_emblem.png',
+              filterQuality: FilterQuality.high,
             ),
           ),
-          IconButton(
-            visualDensity: VisualDensity.compact,
-            onPressed: onStop,
-            icon: const Icon(Icons.stop_circle_outlined, color: AppTheme.red),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  processing ? 'Understanding your voice…' : 'Listening · speak naturally',
+                  style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 7),
+                if (processing)
+                  const LinearProgressIndicator(
+                    minHeight: 3,
+                    borderRadius: BorderRadius.all(Radius.circular(99)),
+                  )
+                else
+                  _VoiceWave(level: normalized),
+                if (text.isNotEmpty && text != 'Listening…' && text != 'Understanding your voice…') ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    text,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: AppTheme.emeraldSoft, fontSize: 11.5, fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ],
+            ),
           ),
+          if (!processing)
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              tooltip: 'Finish voice input',
+              onPressed: onStop,
+              icon: const Icon(Icons.stop_circle_rounded, color: AppTheme.red, size: 26),
+            ),
         ],
+      ),
+    );
+  }
+}
+
+class _VoiceWave extends StatelessWidget {
+  const _VoiceWave({required this.level});
+
+  final double level;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 28,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: List.generate(24, (index) {
+          final phase = math.sin((index + 1) * 0.83).abs();
+          final emphasis = 0.18 + (level * 0.82);
+          final height = 4.0 + (22.0 * emphasis * (0.35 + phase * 0.65));
+          return Expanded(
+            child: Align(
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 90),
+                curve: Curves.easeOut,
+                margin: const EdgeInsets.symmetric(horizontal: 1.2),
+                height: height.clamp(4.0, 26.0),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(99),
+                  gradient: const LinearGradient(
+                    begin: Alignment.bottomCenter,
+                    end: Alignment.topCenter,
+                    colors: [Color(0xFF49E7B3), Color(0xFF67A7FF)],
+                  ),
+                ),
+              ),
+            ),
+          );
+        }),
       ),
     );
   }
@@ -1059,6 +1162,7 @@ class _Composer extends StatelessWidget {
     required this.focusNode,
     required this.busy,
     required this.listening,
+    required this.voiceProcessing,
     required this.voiceAvailable,
     required this.onAttach,
     required this.onSend,
@@ -1069,6 +1173,7 @@ class _Composer extends StatelessWidget {
   final FocusNode focusNode;
   final bool busy;
   final bool listening;
+  final bool voiceProcessing;
   final bool voiceAvailable;
   final VoidCallback onAttach;
   final Future<void> Function() onSend;
@@ -1121,8 +1226,12 @@ class _Composer extends StatelessWidget {
             const SizedBox(width: 7),
             IconButton.filledTonal(
               tooltip: listening ? 'Stop listening' : 'Talk to Cygnus',
-              onPressed: busy || !voiceAvailable ? null : onMic,
-              icon: Icon(listening ? Icons.stop_rounded : Icons.mic_rounded),
+              onPressed: busy || voiceProcessing || !voiceAvailable ? null : onMic,
+              icon: Icon(
+                voiceProcessing
+                    ? Icons.more_horiz_rounded
+                    : (listening ? Icons.stop_rounded : Icons.mic_rounded),
+              ),
             ),
             const SizedBox(width: 6),
             IconButton.filled(
