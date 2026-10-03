@@ -315,8 +315,12 @@ class _CygnusPageState extends State<CygnusPage> {
                         return _CygnusMessageView(
                           message: cygnus.messages[index],
                           pendingAction: cygnus.pendingAction,
+                          busy: cygnus.busy,
+                          pendingRetryId: cygnus.pendingRetryId,
                           onConfirm: cygnus.confirmPendingAction,
                           onCancel: cygnus.cancelPendingAction,
+                          onRetry: cygnus.retryFailedInstruction,
+                          onDismissRetry: cygnus.dismissFailedInstruction,
                           onPrompt: (value) {
                             _composer.text = value;
                             _send();
@@ -334,10 +338,15 @@ class _CygnusPageState extends State<CygnusPage> {
                 onStop: cygnus.stopVoiceInput,
                 onCancel: cygnus.cancelVoiceInput,
               ),
+            if (cygnus.queuedInstructions.isNotEmpty)
+              _QueuedInstructionsBanner(
+                instructions: cygnus.queuedInstructions,
+              ),
             _Composer(
               controller: _composer,
               focusNode: _focus,
               busy: cygnus.busy,
+              queuedInstructionCount: cygnus.queuedInstructionCount,
               listening: cygnus.listening,
               voiceProcessing: cygnus.voiceProcessing,
               voiceAvailable: cygnus.voiceAvailable,
@@ -979,15 +988,23 @@ class _CygnusMessageView extends StatelessWidget {
   const _CygnusMessageView({
     required this.message,
     required this.pendingAction,
+    required this.busy,
+    required this.pendingRetryId,
     required this.onConfirm,
     required this.onCancel,
+    required this.onRetry,
+    required this.onDismissRetry,
     required this.onPrompt,
   });
 
   final CygnusMessage message;
   final PendingCygnusAction? pendingAction;
+  final bool busy;
+  final String? pendingRetryId;
   final Future<void> Function() onConfirm;
   final Future<void> Function() onCancel;
+  final Future<void> Function() onRetry;
+  final Future<void> Function() onDismissRetry;
   final ValueChanged<String> onPrompt;
 
   @override
@@ -1009,8 +1026,17 @@ class _CygnusMessageView extends StatelessWidget {
         body = _ConfirmationCard(
           message: message,
           pendingAction: pendingAction,
+          busy: busy,
           onConfirm: onConfirm,
           onCancel: onCancel,
+        );
+        break;
+      case 'retry':
+        body = _RetryInstructionCard(
+          message: message,
+          isPending: !busy && message.payload['retryId'] == pendingRetryId,
+          onRetry: onRetry,
+          onDismiss: onDismissRetry,
         );
         break;
       case 'image':
@@ -1029,6 +1055,92 @@ class _CygnusMessageView extends StatelessWidget {
           bottom: 10,
         ),
         child: body,
+      ),
+    );
+  }
+}
+
+class _RetryInstructionCard extends StatelessWidget {
+  const _RetryInstructionCard({
+    required this.message,
+    required this.isPending,
+    required this.onRetry,
+    required this.onDismiss,
+  });
+
+  final CygnusMessage message;
+  final bool isPending;
+  final Future<void> Function() onRetry;
+  final Future<void> Function() onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    final resolved = message.payload['resolved']?.toString();
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 430),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppTheme.red.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppTheme.red.withValues(alpha: 0.25)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.error_outline_rounded, color: AppTheme.amber, size: 18),
+              const SizedBox(width: 7),
+              Expanded(
+                child: Text(
+                  resolved == null ? 'Needs attention' : 'Instruction status',
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          _MessageMarkdown(message.text, fontSize: 13),
+          const SizedBox(height: 4),
+          Text(
+            'Instruction: ${message.payload['instruction'] ?? ''}',
+            style: const TextStyle(color: AppTheme.muted, fontSize: 12),
+          ),
+          if (resolved != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(resolved, style: const TextStyle(color: AppTheme.muted)),
+            )
+          else if (isPending)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: onDismiss,
+                      child: const Text('No, leave it'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: FilledButton(
+                      onPressed: onRetry,
+                      child: const Text('Yes, retry once'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          if (resolved == null && !isPending)
+            const Padding(
+              padding: EdgeInsets.only(top: 8),
+              child: Text(
+                'This retry is no longer active. Submit the instruction again if needed.',
+                style: TextStyle(color: AppTheme.muted, fontSize: 11),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -1373,12 +1485,14 @@ class _ConfirmationCard extends StatelessWidget {
   const _ConfirmationCard({
     required this.message,
     required this.pendingAction,
+    required this.busy,
     required this.onConfirm,
     required this.onCancel,
   });
 
   final CygnusMessage message;
   final PendingCygnusAction? pendingAction;
+  final bool busy;
   final Future<void> Function() onConfirm;
   final Future<void> Function() onCancel;
 
@@ -1428,7 +1542,7 @@ class _ConfirmationCard extends StatelessWidget {
               children: [
                 Expanded(
                   child: OutlinedButton(
-                    onPressed: onCancel,
+                    onPressed: busy ? null : onCancel,
                     child: const Text('Cancel'),
                   ),
                 ),
@@ -1438,7 +1552,7 @@ class _ConfirmationCard extends StatelessWidget {
                     style: destructive
                         ? FilledButton.styleFrom(backgroundColor: AppTheme.red)
                         : null,
-                    onPressed: onConfirm,
+                    onPressed: busy ? null : onConfirm,
                     child: Text(destructive ? 'Delete' : 'Confirm'),
                   ),
                 ),
@@ -1632,6 +1746,40 @@ class _VoiceStrip extends StatelessWidget {
   }
 }
 
+class _QueuedInstructionsBanner extends StatelessWidget {
+  const _QueuedInstructionsBanner({required this.instructions});
+
+  final List<String> instructions;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppTheme.amber.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.amber.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.queue_rounded, color: AppTheme.amber, size: 17),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '${instructions.length} queued · ${instructions.first}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: AppTheme.text, fontSize: 11.5),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _VoiceWave extends StatelessWidget {
   const _VoiceWave({required this.level});
 
@@ -1676,6 +1824,7 @@ class _Composer extends StatelessWidget {
     required this.controller,
     required this.focusNode,
     required this.busy,
+    required this.queuedInstructionCount,
     required this.listening,
     required this.voiceProcessing,
     required this.voiceAvailable,
@@ -1687,6 +1836,7 @@ class _Composer extends StatelessWidget {
   final TextEditingController controller;
   final FocusNode focusNode;
   final bool busy;
+  final int queuedInstructionCount;
   final bool listening;
   final bool voiceProcessing;
   final bool voiceAvailable;
@@ -1724,13 +1874,14 @@ class _Composer extends StatelessWidget {
                 child: TextField(
                   controller: controller,
                   focusNode: focusNode,
-                  enabled: !busy,
                   minLines: 1,
                   maxLines: 5,
                   textCapitalization: TextCapitalization.sentences,
                   textInputAction: TextInputAction.newline,
-                  decoration: const InputDecoration(
-                    hintText: 'Ask Cygnus…',
+                  decoration: InputDecoration(
+                    hintText: queuedInstructionCount > 0
+                        ? 'Queue instruction · $queuedInstructionCount waiting'
+                        : (busy ? 'Add instruction to queue…' : 'Ask Cygnus…'),
                     hintStyle: TextStyle(color: AppTheme.muted),
                     border: InputBorder.none,
                     contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 13),
@@ -1751,7 +1902,7 @@ class _Composer extends StatelessWidget {
             const SizedBox(width: 6),
             IconButton.filled(
               tooltip: 'Send',
-              onPressed: busy ? null : onSend,
+              onPressed: onSend,
               icon: const Icon(Icons.arrow_upward_rounded),
             ),
           ],

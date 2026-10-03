@@ -35,9 +35,15 @@ class CygnusController extends ChangeNotifier {
 
   final List<CygnusMessage> _messages = <CygnusMessage>[];
   final List<CygnusSessionSummary> _sessions = <CygnusSessionSummary>[];
+  final List<_QueuedCygnusInstruction> _instructionQueue =
+      <_QueuedCygnusInstruction>[];
 
   bool _initialized = false;
   bool _busy = false;
+  bool _processingQueue = false;
+  bool _activeInstructionHadSideEffect = false;
+  String? _activeToolFailure;
+  String? _deferredDecision;
   bool _renderingReply = false;
   bool _loadingSession = false;
   bool _voiceReply = false;
@@ -51,6 +57,7 @@ class CygnusController extends ChangeNotifier {
   String? _sessionId;
   String? _error;
   PendingCygnusAction? _pendingAction;
+  _PendingCygnusRetry? _pendingRetry;
   Map<String, dynamic>? _lastLeafResult;
 
   ValueChanged<String>? navigationHandler;
@@ -59,6 +66,10 @@ class CygnusController extends ChangeNotifier {
   List<CygnusSessionSummary> get sessions => List.unmodifiable(_sessions);
   bool get initialized => _initialized;
   bool get busy => _busy;
+  int get queuedInstructionCount => _instructionQueue.length;
+  List<String> get queuedInstructions => List.unmodifiable(
+        _instructionQueue.map((instruction) => instruction.text),
+      );
   bool get renderingReply => _renderingReply;
   bool get loadingSession => _loadingSession;
   bool get voiceReply => _voiceReply;
@@ -73,6 +84,7 @@ class CygnusController extends ChangeNotifier {
   String? get sessionId => _sessionId;
   String? get error => _error;
   PendingCygnusAction? get pendingAction => _pendingAction;
+  String? get pendingRetryId => _pendingRetry?.id;
   bool get cloudHistoryEnabled => _store.cloudEnabled;
 
   void attach(AgroController agro, PlanController plan) {
@@ -105,7 +117,18 @@ class CygnusController extends ChangeNotifier {
   }
 
   Future<void> newChat() async {
+    if (_busy ||
+        _instructionQueue.isNotEmpty ||
+        _pendingAction != null ||
+        _pendingRetry != null) {
+      return;
+    }
+    await _createNewChat();
+  }
+
+  Future<void> _createNewChat() async {
     _pendingAction = null;
+    _pendingRetry = null;
     _lastLeafResult = null;
     _messages.clear();
     _sessionId = await _store.createSession(languageCode: _languageCode);
@@ -119,6 +142,12 @@ class CygnusController extends ChangeNotifier {
   }
 
   Future<void> openSession(String id) async {
+    if (_busy ||
+        _instructionQueue.isNotEmpty ||
+        _pendingAction != null ||
+        _pendingRetry != null) {
+      return;
+    }
     if (_sessionId == id && _messages.isNotEmpty) return;
     _loadingSession = true;
     notifyListeners();
@@ -138,6 +167,12 @@ class CygnusController extends ChangeNotifier {
   }
 
   Future<void> deleteCurrentSession() async {
+    if (_busy ||
+        _instructionQueue.isNotEmpty ||
+        _pendingAction != null ||
+        _pendingRetry != null) {
+      return;
+    }
     final id = _sessionId;
     if (id == null) return;
     await _store.deleteSession(id);
@@ -169,17 +204,120 @@ class CygnusController extends ChangeNotifier {
 
   Future<void> sendText(String rawText, {bool fromVoice = false}) async {
     final text = rawText.trim();
-    if (text.isEmpty || _busy) return;
-    if (_sessionId == null) await newChat();
+    if (text.isEmpty) return;
+    if (_pendingAction != null && _isApproval(text)) {
+      if (_busy) {
+        _deferredDecision = 'confirm';
+        return;
+      }
+      await confirmPendingAction();
+      return;
+    }
+    if (_pendingAction != null && _isRejection(text)) {
+      if (_busy) {
+        _deferredDecision = 'cancel';
+        return;
+      }
+      await cancelPendingAction();
+      return;
+    }
+    if (_pendingRetry != null && _isApproval(text)) {
+      if (_busy) {
+        _deferredDecision = 'retry';
+        return;
+      }
+      await retryFailedInstruction();
+      return;
+    }
+    if (_pendingRetry != null && _isRejection(text)) {
+      if (_busy) {
+        _deferredDecision = 'dismiss';
+        return;
+      }
+      await dismissFailedInstruction();
+      return;
+    }
+
+    _instructionQueue.add(
+      _QueuedCygnusInstruction(text: text, fromVoice: fromVoice),
+    );
+    notifyListeners();
+    await _drainInstructionQueue();
+  }
+
+  Future<void> _drainInstructionQueue() async {
+    if (_processingQueue ||
+        _busy ||
+        _pendingAction != null ||
+        _pendingRetry != null ||
+        _disposed) {
+      return;
+    }
+
+    _processingQueue = true;
+    _busy = true;
+    notifyListeners();
+    try {
+      while (_instructionQueue.isNotEmpty &&
+          _pendingAction == null &&
+          _pendingRetry == null &&
+          !_disposed) {
+        final instruction = _instructionQueue.removeAt(0);
+        _activeInstructionHadSideEffect = false;
+        _activeToolFailure = null;
+        try {
+          await _processInstruction(
+            instruction.text,
+            fromVoice: instruction.fromVoice,
+          );
+        } catch (error, stack) {
+          debugPrint('Cygnus queued instruction failed: $error\n$stack');
+          final message = _friendlyAiError(error);
+          if (_pendingAction == null) {
+            await _offerInstructionRetry(instruction, message);
+          } else {
+            await _append(_assistantMessage(message));
+          }
+        }
+        notifyListeners();
+      }
+    } finally {
+      _processingQueue = false;
+      _busy = false;
+      notifyListeners();
+      _flushDeferredDecision();
+      if (_instructionQueue.isEmpty &&
+          _pendingAction == null &&
+          _pendingRetry == null &&
+          _voiceConversation &&
+          !_busy &&
+          !_listening &&
+          !_voiceProcessing) {
+        unawaited(
+          startVoiceInput(keepConversation: true, stopCurrentSpeech: false),
+        );
+      }
+    }
+  }
+
+  Future<void> _processInstruction(
+    String text, {
+    required bool fromVoice,
+    bool appendUserMessage = true,
+    int retryCount = 0,
+  }) async {
+    if (_sessionId == null) await _createNewChat();
 
     final requestedLanguage = _explicitLanguageRequest(text);
     if (requestedLanguage != null && requestedLanguage != _languageCode) {
       await setLanguage(requestedLanguage);
     }
 
-    final user = _userMessage(text);
-    await _append(user);
-    await _ensureSessionTitle(text);
+    if (appendUserMessage) {
+      final user = _userMessage(text);
+      await _append(user);
+      await _ensureSessionTitle(text);
+    }
 
     final scopeReply = _localScopeReply(text);
     if (scopeReply != null) {
@@ -206,6 +344,13 @@ class CygnusController extends ChangeNotifier {
     final fastReply = await _tryFastMotorCommand(text);
     if (fastReply != null) {
       await _append(_assistantMessage(fastReply));
+      if (_activeToolFailure != null && _pendingAction == null) {
+        await _offerInstructionRetry(
+          _QueuedCygnusInstruction(text: text, fromVoice: fromVoice),
+          _activeToolFailure!,
+          retryCount: retryCount,
+        );
+      }
       if (fromVoice) await _handleVoiceReply(fastReply);
       return;
     }
@@ -230,6 +375,13 @@ class CygnusController extends ChangeNotifier {
       _renderingReply = true;
       notifyListeners();
       await _appendAnimatedAssistant(reply);
+      if (_activeToolFailure != null && _pendingAction == null) {
+        await _offerInstructionRetry(
+          _QueuedCygnusInstruction(text: text, fromVoice: fromVoice),
+          _activeToolFailure!,
+          retryCount: retryCount,
+        );
+      }
       _renderingReply = false;
       notifyListeners();
       replyForVoice = reply;
@@ -237,9 +389,15 @@ class CygnusController extends ChangeNotifier {
       debugPrint('Cygnus request failed: $error\n$stack');
       _error = _friendlyAiError(error);
       await _append(_assistantMessage(_error!));
+      if (_pendingAction == null) {
+        await _offerInstructionRetry(
+          _QueuedCygnusInstruction(text: text, fromVoice: fromVoice),
+          _error!,
+          retryCount: retryCount,
+        );
+      }
       replyForVoice = _error;
     } finally {
-      _busy = false;
       _renderingReply = false;
       notifyListeners();
     }
@@ -282,6 +440,7 @@ class CygnusController extends ChangeNotifier {
     _speaking = false;
     notifyListeners();
     if (outcome != CygnusSpeechOutcome.interrupted && !_listening && !_voiceProcessing) {
+      if (_instructionQueue.isNotEmpty) return;
       await startVoiceInput(keepConversation: true, stopCurrentSpeech: false);
     }
   }
@@ -425,7 +584,12 @@ class CygnusController extends ChangeNotifier {
   bool get mountedSafe => !_disposed;
 
   Future<void> analyzeLeaf(String imagePath) async {
-    if (_busy) return;
+    if (_busy ||
+        _instructionQueue.isNotEmpty ||
+        _pendingAction != null ||
+        _pendingRetry != null) {
+      return;
+    }
     _busy = true;
     _error = null;
     notifyListeners();
@@ -475,6 +639,9 @@ class CygnusController extends ChangeNotifier {
     } finally {
       _busy = false;
       notifyListeners();
+      if (_instructionQueue.isNotEmpty) {
+        unawaited(_drainInstructionQueue());
+      }
     }
   }
 
@@ -482,7 +649,7 @@ class CygnusController extends ChangeNotifier {
     bool keepConversation = false,
     bool stopCurrentSpeech = true,
   }) async {
-    if (_busy || _listening || _voiceProcessing || _disposed) return;
+    if (_listening || _voiceProcessing || _disposed) return;
     if (!keepConversation) _voiceConversation = false;
     if (stopCurrentSpeech) await _voice.stopSpeaking();
 
@@ -585,7 +752,14 @@ class CygnusController extends ChangeNotifier {
   }
 
   Future<void> startVoiceConversation() async {
-    if (_disposed || _busy || _voiceProcessing) return;
+    if (_disposed ||
+        _busy ||
+        _voiceProcessing ||
+        _instructionQueue.isNotEmpty ||
+        _pendingAction != null ||
+        _pendingRetry != null) {
+      return;
+    }
     await _voice.cancelListening();
     await _voice.stopSpeaking();
     _listening = false;
@@ -621,21 +795,207 @@ class CygnusController extends ChangeNotifier {
     notifyListeners();
     try {
       final result = await _executePending(action);
-      _pendingAction = null;
-      await _append(
-        _assistantMessage(result['message']?.toString() ?? 'Done.'),
-      );
+      final message = result['message']?.toString() ?? 'Done.';
+      if (result['ok'] == true) {
+        _pendingAction = null;
+        await _append(_assistantMessage(message));
+      } else {
+        await _offerActionRetry(action, message);
+      }
+    } catch (error, stack) {
+      debugPrint('Cygnus action confirmation failed: $error\n$stack');
+      await _offerActionRetry(action, _friendlyAiError(error));
     } finally {
       _busy = false;
       notifyListeners();
+      _deferredDecision = null;
+    }
+    if (_pendingAction == null && _pendingRetry == null) {
+      await _drainInstructionQueue();
     }
   }
 
   Future<void> cancelPendingAction() async {
-    if (_pendingAction == null) return;
+    if (_pendingAction == null || _busy) return;
     _pendingAction = null;
     await _append(_assistantMessage('Cancelled.'));
     notifyListeners();
+    await _drainInstructionQueue();
+  }
+
+  Future<void> retryFailedInstruction() async {
+    final retry = _pendingRetry;
+    if (retry == null) return;
+    if (_busy) {
+      _deferredDecision = 'retry';
+      return;
+    }
+    _pendingRetry = null;
+    _busy = true;
+    _activeInstructionHadSideEffect = false;
+    _activeToolFailure = null;
+    await _resolveRetryMessage(retry.id, 'Retry approved.');
+    notifyListeners();
+
+    try {
+      final action = retry.action;
+      if (action != null) {
+        final result = await _executePending(action);
+        final message = result['message']?.toString() ?? 'Done.';
+        if (result['ok'] == true) {
+          _pendingAction = null;
+          await _append(_assistantMessage(message));
+        } else {
+          await _offerActionRetry(
+            action,
+            message,
+            retryCount: retry.retryCount + 1,
+          );
+        }
+      } else {
+        final instruction = retry.instruction!;
+        await _append(_userMessage(instruction.text));
+        await _processInstruction(
+          instruction.text,
+          fromVoice: instruction.fromVoice,
+          appendUserMessage: false,
+          retryCount: retry.retryCount + 1,
+        );
+      }
+    } catch (error, stack) {
+      debugPrint('Cygnus retry failed: $error\n$stack');
+      final message = _friendlyAiError(error);
+      final action = retry.action;
+      if (action != null) {
+        await _offerActionRetry(
+          action,
+          message,
+          retryCount: retry.retryCount + 1,
+        );
+      } else {
+        await _offerInstructionRetry(
+          retry.instruction!,
+          message,
+          retryCount: retry.retryCount + 1,
+        );
+      }
+    } finally {
+      _busy = false;
+      notifyListeners();
+      _deferredDecision = null;
+    }
+    if (_pendingAction == null && _pendingRetry == null) {
+      await _drainInstructionQueue();
+    }
+  }
+
+  Future<void> dismissFailedInstruction() async {
+    final retry = _pendingRetry;
+    if (retry == null) return;
+    if (_busy) {
+      _deferredDecision = 'dismiss';
+      return;
+    }
+    _pendingRetry = null;
+    if (retry.action != null) _pendingAction = null;
+    await _resolveRetryMessage(retry.id, 'Okay, leaving this instruction here.');
+    if (retry.action != null) {
+      await _append(_assistantMessage('Schedule action cancelled.'));
+    }
+    notifyListeners();
+    await _drainInstructionQueue();
+  }
+
+  Future<void> _offerInstructionRetry(
+    _QueuedCygnusInstruction instruction,
+    String error, {
+    int retryCount = 0,
+  }) async {
+    await _offerRetry(
+      instruction: instruction,
+      error: error,
+      retryCount: retryCount,
+    );
+  }
+
+  Future<void> _offerActionRetry(
+    PendingCygnusAction action,
+    String error, {
+    int retryCount = 0,
+  }) async {
+    await _offerRetry(
+      action: action,
+      error: error,
+      retryCount: retryCount,
+    );
+  }
+
+  Future<void> _offerRetry({
+    _QueuedCygnusInstruction? instruction,
+    PendingCygnusAction? action,
+    required String error,
+    int retryCount = 0,
+  }) async {
+    final id = _id('retry');
+    _pendingRetry = _PendingCygnusRetry(
+      id: id,
+      instruction: instruction,
+      action: action,
+      retryCount: retryCount,
+    );
+    final target = action?.title ?? instruction?.text ?? 'the last instruction';
+    final retryError = _activeInstructionHadSideEffect &&
+            !error.contains('check its state before retrying')
+        ? '$error The action may have reached the device already; check its state before retrying.'
+        : error;
+    await _append(
+      CygnusMessage(
+        id: _id('msg'),
+        role: 'assistant',
+        kind: 'retry',
+        text: 'Could not complete: $retryError',
+        payload: <String, dynamic>{
+          'retryId': id,
+          'instruction': target,
+          'retryCount': retryCount,
+        },
+        createdAt: DateTime.now(),
+      ),
+    );
+  }
+
+  Future<void> _resolveRetryMessage(String id, String status) async {
+    final index = _messages.indexWhere(
+      (message) =>
+          message.kind == 'retry' && message.payload['retryId'] == id,
+    );
+    if (index < 0) return;
+    final previous = _messages[index];
+    final resolved = CygnusMessage(
+      id: previous.id,
+      role: previous.role,
+      kind: 'retry',
+      text: previous.text,
+      payload: <String, dynamic>{...previous.payload, 'resolved': status},
+      createdAt: previous.createdAt,
+    );
+    _messages[index] = resolved;
+    final sessionId = _sessionId;
+    if (sessionId != null) await _store.saveMessage(sessionId, resolved);
+  }
+
+  void _flushDeferredDecision() {
+    final decision = _deferredDecision;
+    _deferredDecision = null;
+    if (decision == 'confirm' && _pendingAction != null) {
+      unawaited(confirmPendingAction());
+    } else if (decision == 'cancel' && _pendingAction != null) {
+      unawaited(cancelPendingAction());
+    } else if (decision == 'retry' && _pendingRetry != null) {
+      unawaited(retryFailedInstruction());
+    } else if (decision == 'dismiss' && _pendingRetry != null) {
+      unawaited(dismissFailedInstruction());
+    }
   }
 
   Future<void> _ensureSessionTitle(String firstUserText) async {
@@ -679,6 +1039,7 @@ The soil-moisture irrigation relay is automatic and separate. Never claim Cygnus
 
 Immediate motor commands: if the user clearly asks to turn a specific motor on/off now (for example "motor 2 start pannuda"), call set_motor immediately. Do not ask for confirmation for clear immediate motor commands. If motor identity or action is missing, ask one short clarification.
 MULTI-MOTOR COMMANDS: complete the entire instruction before replying. If the user asks for several motor actions in one sentence (for example "motor 1 stop and motor 2 and 3 start"), call set_motor_batch ONCE with every requested motor/action pair. Verify every result and only then reply with one concise summary. Never stop after the first requested motor.
+If several separate instructions arrive while you are working, process them in order, finish and verify each instruction before starting the next, and never drop a queued instruction.
 
 Schedules: for any new schedule, collect motor, date, time, duration and repeat rule. If the user uses relative dates/times such as today/tomorrow/morning/evening, call get_current_context before resolving them. When all fields are available, call prepare_schedule. A prepared schedule is not active until the user confirms the in-chat confirmation card. Do not claim it is saved before confirmation.
 
@@ -836,11 +1197,6 @@ You may navigate the app using open_page when the user asks to open a page.
         required: const <String>['scheduleId'],
       ),
       fn(
-        'confirm_pending_action',
-        'Confirm and execute the currently prepared action if the user explicitly says confirm/yes/do it.',
-      ),
-      fn('cancel_pending_action', 'Cancel the currently prepared action.'),
-      fn(
         'set_schedule_enabled',
         'Enable or disable an existing schedule by ID.',
         properties: <String, dynamic>{
@@ -876,6 +1232,18 @@ You may navigate the app using open_page when the user asks to open a page.
     String name,
     Map<String, Object?> args,
   ) async {
+    final result = await _executeToolInternal(name, args);
+    if (result['ok'] == false) {
+      _activeToolFailure =
+          result['message']?.toString() ?? 'The requested action failed.';
+    }
+    return result;
+  }
+
+  Future<Map<String, Object?>> _executeToolInternal(
+    String name,
+    Map<String, Object?> args,
+  ) async {
     switch (name) {
       case 'get_current_context':
         return _currentContext();
@@ -898,17 +1266,6 @@ You may navigate the app using open_page when the user asks to open a page.
         return _prepareSchedule(args);
       case 'prepare_update_schedule':
         return _prepareUpdateSchedule(args);
-      case 'confirm_pending_action':
-        final action = _pendingAction;
-        if (action == null) return <String, Object?>{'ok': false, 'message': 'There is nothing waiting for confirmation.'};
-        final result = await _executePending(action);
-        _pendingAction = null;
-        notifyListeners();
-        return result;
-      case 'cancel_pending_action':
-        _pendingAction = null;
-        notifyListeners();
-        return <String, Object?>{'ok': true, 'message': 'Pending action cancelled.'};
       case 'set_schedule_enabled':
         return _setScheduleEnabled(args['scheduleId']?.toString() ?? '', args['enabled'] == true);
       case 'prepare_delete_schedule':
@@ -1016,12 +1373,26 @@ You may navigate the app using open_page when the user asks to open a page.
 
   Future<Map<String, Object?>> _setMotor(int motor, bool state) async {
     final agro = _agro;
-    if (agro == null) return <String, Object?>{'ok': false, 'message': 'Farm controller is not ready.'};
-    if (motor < 1 || motor > 3) return <String, Object?>{'ok': false, 'message': 'Motor must be 1, 2 or 3.'};
-    if (!agro.deviceOnline) return <String, Object?>{'ok': false, 'message': 'Farm device is offline.'};
+    if (agro == null) {
+      _activeToolFailure = 'Farm controller is not ready.';
+      return <String, Object?>{'ok': false, 'message': _activeToolFailure!};
+    }
+    if (motor < 1 || motor > 3) {
+      _activeToolFailure = 'Motor must be 1, 2 or 3.';
+      return <String, Object?>{'ok': false, 'message': _activeToolFailure!};
+    }
+    if (!agro.deviceOnline) {
+      _activeToolFailure = 'Farm device is offline.';
+      return <String, Object?>{'ok': false, 'message': _activeToolFailure!};
+    }
 
+    _activeInstructionHadSideEffect = true;
     await agro.setMotor(motor, state);
     final confirmed = await _waitForMotor(motor, state);
+    if (!confirmed) {
+      _activeToolFailure =
+          'Motor $motor did not confirm the requested state.';
+    }
     return <String, Object?>{
       'ok': confirmed,
       'motor': motor,
@@ -1317,6 +1688,7 @@ You may navigate the app using open_page when the user asks to open a page.
     if (plan == null) return <String, Object?>{'ok': false, 'message': 'Plans are not ready.'};
     final matches = plan.plans.where((item) => item.id == id);
     if (matches.isEmpty) return <String, Object?>{'ok': false, 'message': 'Schedule not found.'};
+    _activeInstructionHadSideEffect = true;
     final ok = await plan.setEnabled(matches.first, enabled);
     return <String, Object?>{
       'ok': ok,
@@ -1332,6 +1704,7 @@ You may navigate the app using open_page when the user asks to open a page.
     if (plan == null) return <String, Object?>{'ok': false, 'message': 'Plans are not ready.'};
 
     if (action.type == 'create_schedule') {
+      _activeInstructionHadSideEffect = true;
       final a = action.arguments;
       final draft = ScheduleDraft(
         title: a['title']?.toString() ?? 'Motor plan',
@@ -1354,6 +1727,7 @@ You may navigate the app using open_page when the user asks to open a page.
     }
 
     if (action.type == 'update_schedule') {
+      _activeInstructionHadSideEffect = true;
       final a = action.arguments;
       final id = a['scheduleId']?.toString() ?? '';
       final draft = ScheduleDraft(
@@ -1377,6 +1751,7 @@ You may navigate the app using open_page when the user asks to open a page.
     }
 
     if (action.type == 'delete_schedule') {
+      _activeInstructionHadSideEffect = true;
       final id = action.arguments['scheduleId']?.toString() ?? '';
       final ok = await plan.delete(id);
       return <String, Object?>{
@@ -1750,6 +2125,53 @@ You may navigate the app using open_page when the user asks to open a page.
     return '${two(value.hour)}:${two(value.minute)}:${two(value.second)}';
   }
 
+  bool _isApproval(String value) {
+    final normalized = value
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'[.!?,]'), '')
+        .replaceAll(RegExp(r'\s+'), ' ');
+    return const {
+      'yes',
+      'yes confirm',
+      'yes proceed',
+      'confirm',
+      'do it',
+      'proceed',
+      'go ahead',
+      'okay',
+      'ok',
+      'pannidu',
+      'pannu',
+      'ama',
+      'aama',
+      'seri',
+      'சரி',
+      'ஆம்',
+      'பண்ணிடு',
+    }.contains(normalized);
+  }
+
+  bool _isRejection(String value) {
+    final normalized = value
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'[.!?,]'), '')
+        .replaceAll(RegExp(r'\s+'), ' ');
+    return const {
+      'no',
+      'no cancel',
+      'cancel',
+      'stop',
+      'venam',
+      'vendam',
+      'illa',
+      'illai',
+      'வேண்டாம்',
+      'ரத்து',
+    }.contains(normalized);
+  }
+
   String _id(String prefix) => '${prefix}_${DateTime.now().microsecondsSinceEpoch}_${Random.secure().nextInt(1 << 32).toRadixString(16)}';
 
   @override
@@ -1760,4 +2182,28 @@ You may navigate the app using open_page when the user asks to open a page.
     _ai.dispose();
     super.dispose();
   }
+}
+
+class _QueuedCygnusInstruction {
+  const _QueuedCygnusInstruction({
+    required this.text,
+    required this.fromVoice,
+  });
+
+  final String text;
+  final bool fromVoice;
+}
+
+class _PendingCygnusRetry {
+  const _PendingCygnusRetry({
+    required this.id,
+    required this.instruction,
+    required this.action,
+    required this.retryCount,
+  });
+
+  final String id;
+  final _QueuedCygnusInstruction? instruction;
+  final PendingCygnusAction? action;
+  final int retryCount;
 }
