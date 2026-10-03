@@ -11,6 +11,7 @@ const ALLOWED_TOOLS = new Set([
   'get_metric_trend',
   'set_motor',
   'set_all_motors',
+  'set_motor_batch',
   'list_schedules',
   'prepare_schedule',
   'prepare_update_schedule',

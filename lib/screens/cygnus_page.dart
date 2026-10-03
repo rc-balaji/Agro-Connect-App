@@ -276,7 +276,9 @@ class _CygnusPageState extends State<CygnusPage> {
   @override
   Widget build(BuildContext context) {
     final cygnus = context.watch<CygnusController>();
-    _scheduleScroll(cygnus.messages.length + (cygnus.busy ? 1 : 0));
+    final showThinking = cygnus.busy && !cygnus.renderingReply;
+    final lastTextLength = cygnus.messages.isEmpty ? 0 : cygnus.messages.last.text.length;
+    _scheduleScroll((cygnus.messages.length * 100000) + lastTextLength + (showThinking ? 1 : 0));
 
     return Stack(
       children: [
@@ -303,7 +305,7 @@ class _CygnusPageState extends State<CygnusPage> {
                       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                       physics: const BouncingScrollPhysics(),
                       padding: const EdgeInsets.fromLTRB(14, 12, 14, 18),
-                      itemCount: cygnus.messages.length + (cygnus.busy ? 1 : 0),
+                      itemCount: cygnus.messages.length + (showThinking ? 1 : 0),
                       itemBuilder: (context, index) {
                         if (index >= cygnus.messages.length) {
                           return const _ThinkingBubble();
@@ -544,14 +546,51 @@ class _LiveVoiceExperienceState extends State<_LiveVoiceExperience>
                   widget.draft != 'Listening…' &&
                   widget.draft != 'Understanding your voice…') ...[
                 const SizedBox(height: 10),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24),
-                  child: Text(
-                    widget.draft,
-                    textAlign: TextAlign.center,
-                    maxLines: 3,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w700, height: 1.35),
+                Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 22),
+                  padding: const EdgeInsets.fromLTRB(12, 9, 12, 10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF102B24).withValues(alpha: 0.92),
+                    borderRadius: BorderRadius.circular(15),
+                    border: Border.all(color: AppTheme.emerald.withValues(alpha: 0.30)),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Padding(
+                        padding: EdgeInsets.only(top: 1),
+                        child: Icon(Icons.mic_rounded, size: 16, color: AppTheme.emeraldSoft),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'YOU · LIVE TRANSCRIPT',
+                              style: TextStyle(
+                                color: AppTheme.emeraldSoft,
+                                fontSize: 8.5,
+                                fontWeight: FontWeight.w900,
+                                letterSpacing: 0.8,
+                              ),
+                            ),
+                            const SizedBox(height: 3),
+                            Text(
+                              widget.draft,
+                              maxLines: 3,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 13.5,
+                                fontWeight: FontWeight.w700,
+                                height: 1.32,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],

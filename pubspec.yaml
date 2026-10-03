@@ -1,5 +1,5 @@
 name: agro_connect
-version: 1.8.0+10
+version: 1.9.0+11
 publish_to: none
 
 description: AGRO CONNECT realtime smart farming mobile app with offline Leaf AI.
@@ -29,6 +29,7 @@ dependencies:
   record: ^6.2.1
   path_provider: ^2.1.5
   flutter_tts: ^4.2.5
+  speech_to_text: ^7.5.0
 
 dev_dependencies:
   flutter_test:

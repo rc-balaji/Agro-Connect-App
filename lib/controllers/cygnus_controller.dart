@@ -38,6 +38,7 @@ class CygnusController extends ChangeNotifier {
 
   bool _initialized = false;
   bool _busy = false;
+  bool _renderingReply = false;
   bool _loadingSession = false;
   bool _voiceReply = false;
   bool _listening = false;
@@ -58,6 +59,7 @@ class CygnusController extends ChangeNotifier {
   List<CygnusSessionSummary> get sessions => List.unmodifiable(_sessions);
   bool get initialized => _initialized;
   bool get busy => _busy;
+  bool get renderingReply => _renderingReply;
   bool get loadingSession => _loadingSession;
   bool get voiceReply => _voiceReply;
   bool get listening => _listening;
@@ -225,7 +227,11 @@ class CygnusController extends ChangeNotifier {
         reasoningEffort: reasoning,
       );
 
-      await _append(_assistantMessage(reply));
+      _renderingReply = true;
+      notifyListeners();
+      await _appendAnimatedAssistant(reply);
+      _renderingReply = false;
+      notifyListeners();
       replyForVoice = reply;
     } catch (error, stack) {
       debugPrint('Cygnus request failed: $error\n$stack');
@@ -234,6 +240,7 @@ class CygnusController extends ChangeNotifier {
       replyForVoice = _error;
     } finally {
       _busy = false;
+      _renderingReply = false;
       notifyListeners();
     }
 
@@ -671,6 +678,7 @@ Motor mapping:
 The soil-moisture irrigation relay is automatic and separate. Never claim Cygnus manually controls the automatic soil relay.
 
 Immediate motor commands: if the user clearly asks to turn a specific motor on/off now (for example "motor 2 start pannuda"), call set_motor immediately. Do not ask for confirmation for clear immediate motor commands. If motor identity or action is missing, ask one short clarification.
+MULTI-MOTOR COMMANDS: complete the entire instruction before replying. If the user asks for several motor actions in one sentence (for example "motor 1 stop and motor 2 and 3 start"), call set_motor_batch ONCE with every requested motor/action pair. Verify every result and only then reply with one concise summary. Never stop after the first requested motor.
 
 Schedules: for any new schedule, collect motor, date, time, duration and repeat rule. If the user uses relative dates/times such as today/tomorrow/morning/evening, call get_current_context before resolving them. When all fields are available, call prepare_schedule. A prepared schedule is not active until the user confirms the in-chat confirmation card. Do not claim it is saved before confirmation.
 
@@ -767,6 +775,28 @@ You may navigate the app using open_page when the user asks to open a page.
         required: const <String>['state'],
       ),
       fn(
+        'set_motor_batch',
+        'Execute multiple immediate motor ON/OFF actions as one complete user request. Use this for mixed or multi-motor commands.',
+        properties: <String, dynamic>{
+          'operations': <String, dynamic>{
+            'type': 'array',
+            'description': 'Every requested motor action. Include all requested motors before calling.',
+            'minItems': 1,
+            'maxItems': 3,
+            'items': <String, dynamic>{
+              'type': 'object',
+              'properties': <String, dynamic>{
+                'motor': <String, dynamic>{'type': 'integer', 'description': 'Motor 1, 2 or 3.'},
+                'state': <String, dynamic>{'type': 'boolean', 'description': 'true=ON, false=OFF'},
+              },
+              'required': <String>['motor', 'state'],
+              'additionalProperties': false,
+            },
+          },
+        },
+        required: const <String>['operations'],
+      ),
+      fn(
         'list_schedules',
         'List saved motor schedules, optionally for a single motor.',
         properties: <String, dynamic>{
@@ -860,6 +890,8 @@ You may navigate the app using open_page when the user asks to open a page.
         return _setMotor(_asInt(args['motor']) ?? 0, args['state'] == true);
       case 'set_all_motors':
         return _setAllMotors(args['state'] == true);
+      case 'set_motor_batch':
+        return _setMotorBatch(args['operations']);
       case 'list_schedules':
         return _listSchedules(_asInt(args['motor']));
       case 'prepare_schedule':
@@ -1015,6 +1047,52 @@ You may navigate the app using open_page when the user asks to open a page.
       'message': allOk
           ? 'All motors ${state ? 'started' : 'stopped'}.'
           : 'Some motors did not confirm the command.',
+    };
+  }
+
+  Future<Map<String, Object?>> _setMotorBatch(Object? rawOperations) async {
+    if (rawOperations is! List || rawOperations.isEmpty) {
+      return <String, Object?>{
+        'ok': false,
+        'message': 'No motor actions were provided.',
+      };
+    }
+
+    final requested = <int, bool>{};
+    for (final raw in rawOperations.take(3)) {
+      if (raw is! Map) continue;
+      final map = Map<String, dynamic>.from(raw);
+      final motor = _asInt(map['motor']);
+      if (motor == null || motor < 1 || motor > 3) continue;
+      if (map['state'] is! bool) continue;
+      requested[motor] = map['state'] == true;
+    }
+
+    if (requested.isEmpty) {
+      return <String, Object?>{
+        'ok': false,
+        'message': 'No valid motor actions were provided.',
+      };
+    }
+
+    final results = <Map<String, Object?>>[];
+    for (final entry in requested.entries) {
+      results.add(await _setMotor(entry.key, entry.value));
+    }
+
+    final allOk = results.every((item) => item['ok'] == true);
+    final summary = results
+        .map((item) => item['message']?.toString())
+        .whereType<String>()
+        .where((value) => value.isNotEmpty)
+        .join(' ');
+
+    return <String, Object?>{
+      'ok': allOk,
+      'results': results,
+      'message': summary.isEmpty
+          ? (allOk ? 'Motor actions completed.' : 'Some motor actions were not confirmed.')
+          : summary,
     };
   }
 
@@ -1340,37 +1418,125 @@ You may navigate the app using open_page when the user asks to open a page.
     );
     if (planCue.hasMatch(normalized)) return null;
 
-    bool? requestedState;
-    if (RegExp(r'\b(off|stop|stopp|niruth|band|close)\b|நிறுத்து|बंद').hasMatch(normalized)) {
-      requestedState = false;
-    } else if (RegExp(r'\b(on|start|run|open)\b|தொடங்கு|चालू').hasMatch(normalized)) {
-      requestedState = true;
+    final actions = <({int index, bool state})>[];
+    final offPattern = RegExp(r'\b(off|stop|stopp|stoppa|niruth|niruthu|band|close)\b|நிறுத்து|बंद');
+    final onPattern = RegExp(r'\b(on|start|startu|starta|run|open|chalu)\b|தொடங்கு|चालू');
+    for (final match in offPattern.allMatches(normalized)) {
+      actions.add((index: match.start, state: false));
     }
-    if (requestedState == null) return null;
+    for (final match in onPattern.allMatches(normalized)) {
+      actions.add((index: match.start, state: true));
+    }
+    actions.sort((a, b) => a.index.compareTo(b.index));
+    if (actions.isEmpty) return null;
+
+    // Mixed ON/OFF sentences are sent to the agent's set_motor_batch tool so
+    // every requested action is interpreted together and verified as a batch.
+    if (actions.map((item) => item.state).toSet().length > 1) return null;
 
     final allMotors = RegExp(r'\b(all|ella|ellaa|எல்லா|sabhi)\b').hasMatch(normalized) &&
-        RegExp(r'\b(motor|motro|moter|motar)s?\b').hasMatch(normalized);
-    if (allMotors) {
-      final result = await _setAllMotors(requestedState);
+        RegExp(r'\b(motor|motro|moter|motar|motu|moto|motoru)s?\b').hasMatch(normalized);
+    if (allMotors && actions.length == 1) {
+      final result = await _setAllMotors(actions.first.state);
       return result['message']?.toString();
     }
 
-    int? motor;
-    final numeric = RegExp(r'\b(?:motor|motro|moter|motar|m)\s*(?:no\.?\s*)?([123])\b').firstMatch(normalized);
-    if (numeric != null) motor = int.tryParse(numeric.group(1)!);
+    int? motorFromToken(String token) {
+      switch (token.toLowerCase()) {
+        case '1':
+        case 'one':
+        case 'ஒன்று':
+        case 'ஒண்ணு':
+        case 'onnu':
+        case 'ek':
+          return 1;
+        case '2':
+        case 'two':
+        case 'இரண்டு':
+        case 'ரெண்டு':
+        case 'rendu':
+        case 'do':
+          return 2;
+        case '3':
+        case 'three':
+        case 'மூன்று':
+        case 'மூணு':
+        case 'moonu':
+        case 'munu':
+        case 'teen':
+          return 3;
+      }
+      return null;
+    }
 
-    motor ??= RegExp(r'\b(?:motor|motro|moter|motar)\s*(?:one|ஒன்று|ஒண்ணு|ek)\b').hasMatch(normalized) ? 1 : null;
-    motor ??= RegExp(r'\b(?:motor|motro|moter|motar)\s*(?:two|இரண்டு|ரெண்டு|do)\b').hasMatch(normalized) ? 2 : null;
-    motor ??= RegExp(r'\b(?:motor|motro|moter|motar)\s*(?:three|மூன்று|மூணு|teen)\b').hasMatch(normalized) ? 3 : null;
+    final mentions = <({int index, int motor})>[];
+    final explicitMotor = RegExp(
+      r'\b(?:motor|motro|moter|motar|motu|moto|motoru|m)\s*(?:no\.?\s*)?(1|2|3|one|two|three|onnu|rendu|moonu|munu|ஒன்று|ஒண்ணு|இரண்டு|ரெண்டு|மூன்று|மூணு|ek|do|teen)\b',
+      caseSensitive: false,
+    );
+    for (final match in explicitMotor.allMatches(normalized)) {
+      final motor = motorFromToken(match.group(1)!);
+      if (motor != null) mentions.add((index: match.start, motor: motor));
+    }
 
-    // Friendly aliases already visible in the app/prototype.
-    if (motor == null && normalized.contains('green')) motor = 1;
-    if (motor == null && normalized.contains('orange')) motor = 2;
-    if (motor == null && normalized.contains('red')) motor = 3;
+    // Handles natural grouped phrases such as "motor 2 and 3 start" or
+    // "start motor 2, 3" where the word motor is not repeated.
+    final groupedBare = RegExp(
+      r'(?:\band\b|&|,|\+)\s*(?:motor\s*)?(1|2|3|one|two|three|onnu|rendu|moonu|munu)\b',
+      caseSensitive: false,
+    );
+    for (final match in groupedBare.allMatches(normalized)) {
+      final motor = motorFromToken(match.group(1)!);
+      if (motor != null) mentions.add((index: match.start, motor: motor));
+    }
 
-    if (motor == null) return null;
-    final result = await _setMotor(motor, requestedState);
-    return result['message']?.toString();
+    // Friendly visual aliases already shown in the app/prototype.
+    for (final alias in <String, int>{'green': 1, 'orange': 2, 'red': 3}.entries) {
+      for (final match in RegExp(r'\b' + alias.key + r'\b').allMatches(normalized)) {
+        mentions.add((index: match.start, motor: alias.value));
+      }
+    }
+
+    if (mentions.isEmpty) return null;
+    mentions.sort((a, b) => a.index.compareTo(b.index));
+
+    // Match each mentioned motor with the closest ON/OFF action. This covers
+    // mixed commands such as "motor 1 stop and start motor 2 and 3" without
+    // silently dropping the later actions.
+    final chosen = <int, ({bool state, int distance, int index})>{};
+    for (final mention in mentions) {
+      var best = actions.first;
+      var bestDistance = (best.index - mention.index).abs();
+      for (final action in actions.skip(1)) {
+        final distance = (action.index - mention.index).abs();
+        if (distance < bestDistance) {
+          best = action;
+          bestDistance = distance;
+        }
+      }
+      final existing = chosen[mention.motor];
+      if (existing == null || bestDistance < existing.distance) {
+        chosen[mention.motor] = (
+          state: best.state,
+          distance: bestDistance,
+          index: mention.index,
+        );
+      }
+    }
+
+    if (chosen.isEmpty) return null;
+    final ordered = chosen.entries.toList()
+      ..sort((a, b) => a.value.index.compareTo(b.value.index));
+
+    final messages = <String>[];
+    for (final entry in ordered) {
+      final result = await _setMotor(entry.key, entry.value.state);
+      final message = result['message']?.toString();
+      if (message != null && message.isNotEmpty) messages.add(message);
+    }
+
+    if (messages.isEmpty) return null;
+    return messages.join(' ');
   }
 
   Future<bool> _waitForMotor(int motor, bool state) async {
@@ -1410,6 +1576,63 @@ You may navigate the app using open_page when the user asks to open a page.
       return 'End date must be YYYY-MM-DD.';
     }
     return null;
+  }
+
+  Future<void> _appendAnimatedAssistant(String fullText) async {
+    final clean = fullText.trim();
+    if (clean.isEmpty) {
+      await _append(_assistantMessage('Done.'));
+      return;
+    }
+
+    final messageId = _id('msg');
+    final createdAt = DateTime.now();
+    _messages.add(CygnusMessage(
+      id: messageId,
+      role: 'assistant',
+      text: '',
+      createdAt: createdAt,
+    ));
+    notifyListeners();
+
+    final chunks = RegExp(r'\S+\s*')
+        .allMatches(clean)
+        .map((match) => match.group(0) ?? '')
+        .where((value) => value.isNotEmpty)
+        .toList(growable: false);
+
+    final batchSize = chunks.length <= 36 ? 1 : (chunks.length / 36).ceil();
+    final buffer = StringBuffer();
+    for (var i = 0; i < chunks.length; i += batchSize) {
+      final end = min(chunks.length, i + batchSize);
+      for (var j = i; j < end; j++) {
+        buffer.write(chunks[j]);
+      }
+      final index = _messages.indexWhere((message) => message.id == messageId);
+      if (index < 0 || _disposed) return;
+      _messages[index] = CygnusMessage(
+        id: messageId,
+        role: 'assistant',
+        text: buffer.toString().trimRight(),
+        createdAt: createdAt,
+      );
+      notifyListeners();
+      if (end < chunks.length) {
+        await Future<void>.delayed(const Duration(milliseconds: 24));
+      }
+    }
+
+    final index = _messages.indexWhere((message) => message.id == messageId);
+    final finalMessage = CygnusMessage(
+      id: messageId,
+      role: 'assistant',
+      text: clean,
+      createdAt: createdAt,
+    );
+    if (index >= 0) _messages[index] = finalMessage;
+    final id = _sessionId;
+    if (id != null) await _store.saveMessage(id, finalMessage);
+    notifyListeners();
   }
 
   Future<void> _append(CygnusMessage message) async {
