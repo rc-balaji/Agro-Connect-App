@@ -10,3 +10,5 @@ android/key.properties
 .vscode/
 *.iml
 .DS_Store
+.local/
+flutter_*.log

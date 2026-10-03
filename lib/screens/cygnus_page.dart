@@ -20,13 +20,39 @@ class CygnusPage extends StatefulWidget {
   State<CygnusPage> createState() => _CygnusPageState();
 }
 
-class _CygnusPageState extends State<CygnusPage> {
+class _CygnusPageState extends State<CygnusPage> with WidgetsBindingObserver {
   final TextEditingController _composer = TextEditingController();
   final ScrollController _scroll = ScrollController();
   final FocusNode _focus = FocusNode();
   final ImagePicker _picker = ImagePicker();
   CygnusController? _boundCygnus;
   int _lastMessageCount = -1;
+  bool _dictatedDraft = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      _boundCygnus?.stopVoiceConversation();
+    }
+  }
+
+  void _receiveDictation(String text) {
+    if (!mounted) return;
+    _dictatedDraft = true;
+    final draft = _composer.text.trimRight();
+    _composer.text = draft.isEmpty ? text : '$draft $text';
+    _composer.selection = TextSelection.collapsed(
+      offset: _composer.text.length,
+    );
+    _focus.requestFocus();
+  }
 
   @override
   void didChangeDependencies() {
@@ -34,13 +60,18 @@ class _CygnusPageState extends State<CygnusPage> {
     final controller = context.read<CygnusController>();
     if (!identical(_boundCygnus, controller)) {
       _boundCygnus?.navigationHandler = null;
+      _boundCygnus?.onDictation = null;
       _boundCygnus = controller;
       controller.navigationHandler = widget.onNavigate;
+      controller.onDictation = _receiveDictation;
     }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _boundCygnus?.onDictation = null;
+    _boundCygnus?.stopVoiceConversation();
     if (identical(_boundCygnus?.navigationHandler, widget.onNavigate)) {
       _boundCygnus?.navigationHandler = null;
     }
@@ -65,10 +96,18 @@ class _CygnusPageState extends State<CygnusPage> {
 
   Future<void> _send() async {
     final value = _composer.text.trim();
-    if (value.isEmpty || context.read<CygnusController>().busy) return;
+    if (value.isEmpty ||
+        context.read<CygnusController>().busy ||
+        context.read<CygnusController>().liveActive)
+      return;
+    final fromVoice = _dictatedDraft;
+    _dictatedDraft = false;
     _composer.clear();
     _focus.requestFocus();
-    await context.read<CygnusController>().sendText(value);
+    await context.read<CygnusController>().sendText(
+      value,
+      fromVoice: fromVoice,
+    );
   }
 
   Future<void> _pickLeaf(ImageSource source) async {
@@ -312,14 +351,14 @@ class _CygnusPageState extends State<CygnusPage> {
           voiceAvailable: cygnus.voiceAvailable,
           onVoiceConversation: cygnus.voiceConversation
               ? cygnus.stopVoiceConversation
-              : cygnus.startVoiceConversation,
-          onSessions: cygnus.busy ? () {} : _showSessions,
+              : cygnus.startLiveConversation,
+          onSessions: cygnus.busy || cygnus.liveActive ? () {} : _showSessions,
           onNewChat: () async {
-            if (!cygnus.busy) await cygnus.newChat();
+            if (!cygnus.busy && !cygnus.liveActive) await cygnus.newChat();
           },
           onVoiceReplyChanged: cygnus.setVoiceReply,
           onLanguageChanged: (code) async {
-            if (!cygnus.busy && !cygnus.listening)
+            if (!cygnus.busy && !cygnus.listening && !cygnus.liveActive)
               await cygnus.setLanguage(code);
           },
         ),
@@ -396,7 +435,7 @@ class _CygnusPageState extends State<CygnusPage> {
         _Composer(
           controller: _composer,
           focusNode: _focus,
-          busy: cygnus.busy,
+          busy: cygnus.busy || cygnus.liveActive,
           listening: cygnus.listening,
           voiceAvailable: cygnus.voiceAvailable,
           onAttach: _showAttachmentSheet,
@@ -548,8 +587,8 @@ class _CygnusBar extends StatelessWidget {
               IconButton(
                 tooltip: voiceConversation
                     ? 'End voice conversation'
-                    : 'Start voice turns',
-                onPressed: voiceAvailable ? onVoiceConversation : null,
+                    : 'Start Live audio',
+                onPressed: onVoiceConversation,
                 icon: Icon(
                   voiceConversation
                       ? Icons.call_end_rounded
@@ -562,7 +601,9 @@ class _CygnusBar extends StatelessWidget {
               ),
               IconButton(
                 tooltip: voiceReply ? 'Voice replies on' : 'Voice replies off',
-                onPressed: () => onVoiceReplyChanged(!voiceReply),
+                onPressed: voiceConversation
+                    ? null
+                    : () => onVoiceReplyChanged(!voiceReply),
                 icon: Icon(
                   voiceReply
                       ? Icons.volume_up_rounded
@@ -1300,7 +1341,9 @@ class _Composer extends StatelessWidget {
             ),
             const SizedBox(width: 7),
             IconButton.filledTonal(
-              tooltip: listening ? 'Stop listening' : 'Talk to Cygnus',
+              tooltip: listening
+                  ? 'Stop listening'
+                  : 'Dictate, review, then Send',
               onPressed: busy || !voiceAvailable ? null : onMic,
               icon: Icon(listening ? Icons.stop_rounded : Icons.mic_rounded),
             ),

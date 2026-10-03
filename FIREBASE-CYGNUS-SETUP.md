@@ -1,3 +1,5 @@
+> Latest update: see [VOICE-LIVE-SETUP.md](VOICE-LIVE-SETUP.md) for version 1.5.2+9 Live audio, reviewed dictation and fixed App Check tokens.
+
 # Cygnus Firebase setup
 
 The Flutter code is already wired to the Android Firebase app registered as
@@ -96,3 +98,4 @@ Gemini Live audio session. Select Tamil for Tamil speech. Android can end listen
 after silence; voice mode retries a silent turn twice, then pauses with guidance.
 Recognition errors and AI failures pause the loop instead of repeatedly calling
 the API. See https://pub.dev/packages/speech_to_text .
+

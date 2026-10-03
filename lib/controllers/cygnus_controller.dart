@@ -11,6 +11,7 @@ import '../cygnus/cygnus_models.dart';
 import '../cygnus/immediate_motor_command.dart';
 import '../cygnus/cygnus_session_store.dart';
 import '../cygnus/cygnus_voice_service.dart';
+import '../cygnus/cygnus_live_service.dart';
 import '../models/schedule_plan.dart';
 import '../models/telemetry.dart';
 import 'agro_controller.dart';
@@ -34,13 +35,20 @@ class CygnusController extends ChangeNotifier {
   CygnusController({
     CygnusSessionStore? sessionStore,
     CygnusVoiceService? voiceService,
+    CygnusLiveService? liveService,
     PlantAiService? plantAiService,
   }) : _store = sessionStore ?? CygnusSessionStore(),
        _voice = voiceService ?? CygnusVoiceService(),
+       _live = liveService ?? CygnusLiveService(),
        _plantAi = plantAiService ?? PlantAiService();
 
   final CygnusSessionStore _store;
   final CygnusVoiceService _voice;
+  final CygnusLiveService _live;
+  bool _liveActive = false;
+  bool _liveStarting = false;
+  bool get liveActive => _liveActive;
+  ValueChanged<String>? onDictation;
   final PlantAiService _plantAi;
 
   AgroController? _agro;
@@ -89,7 +97,7 @@ class CygnusController extends ChangeNotifier {
   bool get loadingSession => _loadingSession;
   bool get voiceReply => _voiceReply;
   bool get listening => _listening;
-  bool get voiceConversation => _voiceConversation;
+  bool get voiceConversation => _voiceConversation || _liveActive;
   bool get voiceAvailable => _voice.available;
   String get voiceDraft => _voiceDraft;
   String get languageCode => _languageCode;
@@ -196,7 +204,7 @@ class CygnusController extends ChangeNotifier {
 
   Future<void> sendText(String rawText, {bool fromVoice = false}) async {
     final text = rawText.trim();
-    if (text.isEmpty || _busy) return;
+    if (text.isEmpty || _busy || _liveActive) return;
     _busy = true;
     _error = null;
     notifyListeners();
@@ -400,7 +408,7 @@ class CygnusController extends ChangeNotifier {
   }
 
   Future<void> startVoiceInput({bool keepConversation = false}) async {
-    if (_busy || _listening || _disposed) return;
+    if (_busy || _listening || _disposed || _liveActive) return;
     final voiceRequest = ++_voiceRequest;
     _voiceRestart?.cancel();
     if (!keepConversation) {
@@ -431,12 +439,25 @@ class CygnusController extends ChangeNotifier {
         _silentTurns = 0;
         _voiceDraft = '';
         _listening = false;
+        if (!keepConversation) {
+          _status = 'Review your words, then tap Send';
+          onDictation?.call(text);
+          notifyListeners();
+          return;
+        }
         notifyListeners();
         unawaited(sendText(text, fromVoice: true));
       },
       onEnded: (message) {
         if (_disposed || voiceRequest != _voiceRequest) return;
         _listening = false;
+        if (!keepConversation && _voiceDraft.trim().isNotEmpty) {
+          onDictation?.call(_voiceDraft.trim());
+          _voiceDraft = '';
+          _voiceNotice = message;
+          _setStatus('Review your words, then tap Send');
+          return;
+        }
         _voiceDraft = '';
         if (message == null && _voiceConversation && ++_silentTurns <= 2) {
           _status = 'Listening again…';
@@ -464,15 +485,80 @@ class CygnusController extends ChangeNotifier {
     await startVoiceInput(keepConversation: true);
   }
 
+  Future<void> startLiveConversation() async {
+    if (_disposed || _busy || _liveActive || _liveStarting) return;
+    _liveStarting = true;
+    await stopVoiceConversation();
+    if (_disposed) {
+      _liveStarting = false;
+      return;
+    }
+    final request = ++_voiceRequest;
+    _liveActive = true;
+    _voiceNotice =
+        'Live audio uses your network and API quota. Stop ends the microphone session. Use the dictation mic for motor commands.';
+    _setStatus('Starting Live audio…');
+    const readTools = {
+      'get_current_context',
+      'get_current_status',
+      'get_metric_trend',
+      'list_schedules',
+      'get_last_leaf_result',
+    };
+    await _live.start(
+      instruction:
+          '${_systemInstruction()}\nThis is a live audio conversation. Listen to Tamil, Tanglish and English naturally and respond in the speaker’s language. Ask when unclear; do not guess. Only read-only tools are available in Live. For motor or schedule changes, tell the user to use dictation, review the text, and Send. Never claim an action occurred without a tool result.',
+      tools: [
+        Tool.functionDeclarations(
+          _toolDeclarations()
+              .where((tool) => readTools.contains(tool.name))
+              .toList(),
+        ),
+      ],
+      onTool: (name, args) async {
+        if (_disposed ||
+            request != _voiceRequest ||
+            !readTools.contains(name)) {
+          return {
+            'ok': false,
+            'message': 'This action is unavailable in Live.',
+          };
+        }
+        return _executeTool(name, args);
+      },
+      onStatus: (status) {
+        if (!_disposed && request == _voiceRequest) _setStatus(status);
+      },
+      onTranscript: (text, fromUser) {
+        if (_disposed || request != _voiceRequest) return;
+        _chat = null;
+        unawaited(
+          _append(fromUser ? _userMessage(text) : _assistantMessage(text)),
+        );
+      },
+      onError: (error) {
+        if (_disposed || request != _voiceRequest) return;
+        _liveActive = false;
+        _voiceNotice = error is StateError
+            ? error.message.toString()
+            : 'Live audio stopped. ${CygnusDiagnostic.fromError(error).message}';
+        _setStatus('Live ended');
+      },
+    );
+    _liveStarting = false;
+  }
+
   Future<void> stopVoiceConversation() async {
     ++_voiceRequest;
     _voiceRestart?.cancel();
     _voiceConversation = false;
+    _liveActive = false;
     _listening = false;
     _voiceDraft = '';
     _status = 'Ready';
     await _voice.cancelListening();
     await _voice.stopSpeaking();
+    await _live.stop();
     if (!_disposed) notifyListeners();
   }
 
@@ -1446,7 +1532,7 @@ You may navigate the app using open_page when the user asks to open a page.
     if (id != null && message.kind != 'image') {
       await _store.saveMessage(id, message);
     }
-    notifyListeners();
+    if (!_disposed) notifyListeners();
   }
 
   CygnusMessage _userMessage(String text) => CygnusMessage(
@@ -1560,6 +1646,7 @@ You may navigate the app using open_page when the user asks to open a page.
     _disposed = true;
     _voiceRestart?.cancel();
     _voice.dispose();
+    unawaited(_live.stop());
     _plantAi.dispose();
     super.dispose();
   }

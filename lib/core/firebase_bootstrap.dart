@@ -7,6 +7,15 @@ import '../firebase_options.dart';
 class FirebaseBootstrap {
   FirebaseBootstrap._();
 
+  static const _debugToken = String.fromEnvironment(
+    'AGRO_APP_CHECK_DEBUG_TOKEN',
+  );
+
+  static bool isValidDebugToken(String value) => RegExp(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+    caseSensitive: false,
+  ).hasMatch(value);
+
   static const bool _forceDebugAppCheck = bool.fromEnvironment(
     'AGRO_APP_CHECK_DEBUG',
     defaultValue: false,
@@ -39,13 +48,20 @@ class FirebaseBootstrap {
     }
 
     try {
+      if (usesDebugAppCheck &&
+          _debugToken.isNotEmpty &&
+          !isValidDebugToken(_debugToken)) {
+        throw const FormatException('App Check debug token must be UUID v4.');
+      }
       debugPrint(
         '[AppCheck] provider=$appCheckProvider '
         'project=${Firebase.app().options.projectId}',
       );
       await FirebaseAppCheck.instance.activate(
         providerAndroid: usesDebugAppCheck
-            ? const AndroidDebugProvider()
+            ? AndroidDebugProvider(
+                debugToken: _debugToken.isEmpty ? null : _debugToken,
+              )
             : const AndroidPlayIntegrityProvider(),
       );
       await FirebaseAppCheck.instance.setTokenAutoRefreshEnabled(true);

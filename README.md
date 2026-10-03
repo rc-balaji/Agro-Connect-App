@@ -1,3 +1,5 @@
+> Latest update: see [VOICE-LIVE-SETUP.md](VOICE-LIVE-SETUP.md) for version 1.5.2+9 Live audio, reviewed dictation and fixed App Check tokens.
+
 # AGRO CONNECT Flutter Mobile App
 
 Production-style Flutter client for the AGRO CONNECT ESP32 smart-farming prototype.
@@ -255,3 +257,4 @@ See `CYGNUS-FIX-NOTES.md` for the verified failures, fixes and device retest ste
 Chat history stays on this phone. AI generation still requires internet and is
 subject to Gemini API quotas. No Firebase billing or enforcement setting is changed
 by this update.
+

@@ -1,3 +1,5 @@
+> Latest update: see [VOICE-LIVE-SETUP.md](VOICE-LIVE-SETUP.md) for version 1.5.2+9 Live audio, reviewed dictation and fixed App Check tokens.
+
 # Cygnus fixes — 1.5.1+8
 
 ## Findings on the connected phone
@@ -88,3 +90,4 @@ success of this private debug APK does not validate production attestation.
   the local Android SDK is absent. Physical microphone/TTS behavior and actual
   device control must be rechecked on the GitHub Actions APK after installation.
 - Firebase Console, billing, quotas and existing cloud chat records were unchanged.
+

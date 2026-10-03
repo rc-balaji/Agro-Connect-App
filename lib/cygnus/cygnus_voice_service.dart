@@ -98,6 +98,12 @@ class CygnusVoiceService {
     _turnOpen = true;
     final locale = await _bestLocale(languageCode);
     if (!_turnOpen || generation != _generation) return;
+    if (locale == null) {
+      _finish(
+        'Selected speech language is unavailable on this phone. Install its speech language or use Live audio.',
+      );
+      return;
+    }
     try {
       await _speech.listen(
         onResult: (result) {
@@ -141,14 +147,20 @@ class CygnusVoiceService {
     if (text.trim().isEmpty) return;
     await initialize();
     await _tts.stop();
-    await _tts.setLanguage(switch (languageCode) {
+    final locale = switch (languageCode) {
       'ta' => 'ta-IN',
       'hi' => 'hi-IN',
       'ml' => 'ml-IN',
       'kn' => 'kn-IN',
       _ => 'en-IN',
-    });
-    await _tts.speak(text).timeout(const Duration(seconds: 60));
+    };
+    if (await _tts.isLanguageAvailable(locale) != true) {
+      throw StateError('Selected text-to-speech language is not installed.');
+    }
+    await _tts.setLanguage(locale);
+    final result = await _tts.speak(text).timeout(const Duration(seconds: 60));
+    if (result != 1)
+      throw StateError('Text-to-speech could not play the reply.');
   }
 
   Future<void> stopSpeaking() async {

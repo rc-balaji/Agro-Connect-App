@@ -7,6 +7,8 @@ class FakeVoice extends CygnusVoiceService {
   int starts = 0;
   int cancels = 0;
   ValueChanged<String?>? ended;
+  ValueChanged<String>? finalWords;
+  ValueChanged<String>? partialWords;
   @override
   bool get available => true;
   @override
@@ -32,11 +34,44 @@ class FakeVoice extends CygnusVoiceService {
   }) async {
     starts++;
     ended = onEnded;
+    finalWords = onFinal;
+    partialWords = onPartial;
     onListening?.call(true);
   }
 }
 
 void main() {
+  testWidgets(
+    'dictation is reviewed instead of sending a recognized motor command',
+    (tester) async {
+      final voice = FakeVoice();
+      final controller = CygnusController(voiceService: voice);
+      String? draft;
+      controller.onDictation = (text) => draft = text;
+      await controller.startVoiceInput();
+      voice.finalWords!('Motor 2 on');
+      expect(draft, 'Motor 2 on');
+      expect(controller.messages, isEmpty);
+      expect(controller.busy, false);
+      expect(controller.status, contains('Review'));
+      controller.dispose();
+    },
+  );
+  testWidgets(
+    'dictation preserves partial words when Android ends before final result',
+    (tester) async {
+      final voice = FakeVoice();
+      final controller = CygnusController(voiceService: voice);
+      String? draft;
+      controller.onDictation = (text) => draft = text;
+      await controller.startVoiceInput();
+      voice.partialWords!('Current temperature');
+      voice.ended!(null);
+      expect(draft, 'Current temperature');
+      expect(controller.messages, isEmpty);
+      controller.dispose();
+    },
+  );
   testWidgets(
     'asynchronous listening does not immediately end the conversation',
     (tester) async {
