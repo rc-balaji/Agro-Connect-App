@@ -14,10 +14,7 @@ import '../core/app_theme.dart';
 import '../cygnus/cygnus_models.dart';
 
 class CygnusPage extends StatefulWidget {
-  const CygnusPage({
-    super.key,
-    required this.onNavigate,
-  });
+  const CygnusPage({super.key, required this.onNavigate});
 
   final ValueChanged<String> onNavigate;
 
@@ -32,8 +29,6 @@ class _CygnusPageState extends State<CygnusPage> {
   final ImagePicker _picker = ImagePicker();
   CygnusController? _boundCygnus;
   int _lastMessageCount = -1;
-
-
 
   @override
   void didChangeDependencies() {
@@ -153,12 +148,18 @@ class _CygnusPageState extends State<CygnusPage> {
                           children: [
                             Text(
                               'Conversations',
-                              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
+                              style: TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.w900,
+                              ),
                             ),
                             SizedBox(height: 2),
                             Text(
                               'Continue where you left off',
-                              style: TextStyle(color: AppTheme.muted, fontSize: 12),
+                              style: TextStyle(
+                                color: AppTheme.muted,
+                                fontSize: 12,
+                              ),
                             ),
                           ],
                         ),
@@ -193,7 +194,9 @@ class _CygnusPageState extends State<CygnusPage> {
                               padding: const EdgeInsets.only(bottom: 5),
                               child: ListTile(
                                 selected: selected,
-                                selectedTileColor: AppTheme.emerald.withValues(alpha: 0.09),
+                                selectedTileColor: AppTheme.emerald.withValues(
+                                  alpha: 0.09,
+                                ),
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(14),
                                 ),
@@ -201,32 +204,49 @@ class _CygnusPageState extends State<CygnusPage> {
                                   width: 38,
                                   height: 38,
                                   decoration: BoxDecoration(
-                                    color: (selected ? AppTheme.emerald : AppTheme.surface2)
-                                        .withValues(alpha: selected ? 0.13 : 1),
+                                    color:
+                                        (selected
+                                                ? AppTheme.emerald
+                                                : AppTheme.surface2)
+                                            .withValues(
+                                              alpha: selected ? 0.13 : 1,
+                                            ),
                                     borderRadius: BorderRadius.circular(12),
                                   ),
                                   child: Icon(
                                     Icons.chat_bubble_outline_rounded,
                                     size: 19,
-                                    color: selected ? AppTheme.emeraldSoft : AppTheme.muted,
+                                    color: selected
+                                        ? AppTheme.emeraldSoft
+                                        : AppTheme.muted,
                                   ),
                                 ),
                                 title: Text(
                                   session.title,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(fontWeight: FontWeight.w700),
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                  ),
                                 ),
                                 subtitle: Text(
                                   _relativeTime(session.updatedAt),
-                                  style: const TextStyle(color: AppTheme.muted, fontSize: 11),
+                                  style: const TextStyle(
+                                    color: AppTheme.muted,
+                                    fontSize: 11,
+                                  ),
                                 ),
                                 trailing: selected
-                                    ? const Icon(Icons.check_circle_rounded, color: AppTheme.emerald, size: 18)
+                                    ? const Icon(
+                                        Icons.check_circle_rounded,
+                                        color: AppTheme.emerald,
+                                        size: 18,
+                                      )
                                     : null,
                                 onTap: () async {
                                   await cygnus.openSession(session.id);
-                                  if (sheetContext.mounted) Navigator.pop(sheetContext);
+                                  if (sheetContext.mounted)
+                                    Navigator.pop(sheetContext);
                                 },
                               ),
                             );
@@ -240,18 +260,23 @@ class _CygnusPageState extends State<CygnusPage> {
                       width: double.infinity,
                       child: OutlinedButton.icon(
                         onPressed: () async {
-                          final confirmed = await showDialog<bool>(
+                          final confirmed =
+                              await showDialog<bool>(
                                 context: sheetContext,
                                 builder: (dialogContext) => AlertDialog(
                                   title: const Text('Delete this chat?'),
-                                  content: const Text('This conversation will be removed from your history.'),
+                                  content: const Text(
+                                    'This conversation will be removed from your history.',
+                                  ),
                                   actions: [
                                     TextButton(
-                                      onPressed: () => Navigator.pop(dialogContext, false),
+                                      onPressed: () =>
+                                          Navigator.pop(dialogContext, false),
                                       child: const Text('Cancel'),
                                     ),
                                     FilledButton(
-                                      onPressed: () => Navigator.pop(dialogContext, true),
+                                      onPressed: () =>
+                                          Navigator.pop(dialogContext, true),
                                       child: const Text('Delete'),
                                     ),
                                   ],
@@ -279,8 +304,14 @@ class _CygnusPageState extends State<CygnusPage> {
   Widget build(BuildContext context) {
     final cygnus = context.watch<CygnusController>();
     final showThinking = cygnus.busy && !cygnus.renderingReply;
-    final lastTextLength = cygnus.messages.isEmpty ? 0 : cygnus.messages.last.text.length;
-    _scheduleScroll((cygnus.messages.length * 100000) + lastTextLength + (showThinking ? 1 : 0));
+    final lastTextLength = cygnus.messages.isEmpty
+        ? 0
+        : cygnus.messages.last.text.length;
+    _scheduleScroll(
+      (cygnus.messages.length * 100000) +
+          lastTextLength +
+          (showThinking ? 1 : 0),
+    );
 
     return Stack(
       children: [
@@ -304,10 +335,12 @@ class _CygnusPageState extends State<CygnusPage> {
                   ? const Center(child: CircularProgressIndicator())
                   : ListView.builder(
                       controller: _scroll,
-                      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+                      keyboardDismissBehavior:
+                          ScrollViewKeyboardDismissBehavior.onDrag,
                       physics: const BouncingScrollPhysics(),
                       padding: const EdgeInsets.fromLTRB(14, 12, 14, 18),
-                      itemCount: cygnus.messages.length + (showThinking ? 1 : 0),
+                      itemCount:
+                          cygnus.messages.length + (showThinking ? 1 : 0),
                       itemBuilder: (context, index) {
                         if (index >= cygnus.messages.length) {
                           return const _ThinkingBubble();
@@ -330,17 +363,15 @@ class _CygnusPageState extends State<CygnusPage> {
                     ),
             ),
             if (!cygnus.voiceConversation &&
-                (cygnus.listening || cygnus.voiceProcessing || cygnus.voiceDraft.isNotEmpty))
+                (cygnus.listening ||
+                    cygnus.voiceProcessing ||
+                    cygnus.voiceDraft.isNotEmpty))
               _VoiceStrip(
                 text: cygnus.voiceDraft,
                 level: cygnus.voiceLevel,
                 processing: cygnus.voiceProcessing,
                 onStop: cygnus.stopVoiceInput,
                 onCancel: cygnus.cancelVoiceInput,
-              ),
-            if (cygnus.queuedInstructions.isNotEmpty)
-              _QueuedInstructionsBanner(
-                instructions: cygnus.queuedInstructions,
               ),
             _Composer(
               controller: _composer,
@@ -352,7 +383,9 @@ class _CygnusPageState extends State<CygnusPage> {
               voiceAvailable: cygnus.voiceAvailable,
               onAttach: _showAttachmentSheet,
               onSend: _send,
-              onMic: cygnus.listening ? cygnus.stopVoiceInput : cygnus.startVoiceInput,
+              onMic: cygnus.listening
+                  ? cygnus.stopVoiceInput
+                  : cygnus.startVoiceInput,
             ),
           ],
         ),
@@ -370,14 +403,37 @@ class _CygnusPageState extends State<CygnusPage> {
               onStopListening: cygnus.stopVoiceInput,
               onCancelListening: cygnus.cancelVoiceInput,
               onInterrupt: cygnus.interruptAssistant,
-              onStartListening: () => cygnus.startVoiceInput(keepConversation: true),
+              onStartListening: () =>
+                  cygnus.startVoiceInput(keepConversation: true),
+            ),
+          ),
+        if (cygnus.activeInstruction != null ||
+            cygnus.queuedInstructions.isNotEmpty ||
+            cygnus.pendingAction != null ||
+            cygnus.pendingRetryId != null ||
+            cygnus.restoringQueue)
+          Positioned(
+            top: 70,
+            left: 12,
+            right: 12,
+            child: _InstructionQueueOverlay(
+              active: cygnus.activeInstruction,
+              waiting: cygnus.queuedInstructions,
+              completed: cygnus.completedInstructionCount,
+              skipped: cygnus.skippedInstructionCount,
+              total: cygnus.instructionBatchSize,
+              progress: cygnus.instructionProgress,
+              running: cygnus.processingInstructionQueue || cygnus.busy,
+              waitingForConfirmation: cygnus.pendingAction != null,
+              waitingForDecision: cygnus.pendingRetryId != null,
+              restoring: cygnus.restoringQueue,
+              failedInstruction: cygnus.pendingRetryInstruction,
             ),
           ),
       ],
     );
   }
 }
-
 
 class _LiveVoiceExperience extends StatefulWidget {
   const _LiveVoiceExperience({
@@ -476,17 +532,29 @@ class _LiveVoiceExperienceState extends State<_LiveVoiceExperience>
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('Live with Cygnus', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+                          Text(
+                            'Live with Cygnus',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
                           SizedBox(height: 2),
                           Text(
                             'Speak naturally · interrupt anytime',
-                            style: TextStyle(color: AppTheme.muted, fontSize: 11),
+                            style: TextStyle(
+                              color: AppTheme.muted,
+                              fontSize: 11,
+                            ),
                           ),
                         ],
                       ),
                     ),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 5,
+                      ),
                       decoration: BoxDecoration(
                         color: AppTheme.surface2.withValues(alpha: 0.85),
                         borderRadius: BorderRadius.circular(99),
@@ -494,14 +562,20 @@ class _LiveVoiceExperienceState extends State<_LiveVoiceExperience>
                       ),
                       child: Text(
                         widget.languageCode.toUpperCase(),
-                        style: const TextStyle(fontSize: 9.5, fontWeight: FontWeight.w900),
+                        style: const TextStyle(
+                          fontSize: 9.5,
+                          fontWeight: FontWeight.w900,
+                        ),
                       ),
                     ),
                     const SizedBox(width: 5),
                     IconButton(
                       tooltip: 'End live interaction',
                       onPressed: widget.onEnd,
-                      icon: const Icon(Icons.close_rounded, color: Colors.white),
+                      icon: const Icon(
+                        Icons.close_rounded,
+                        color: Colors.white,
+                      ),
                     ),
                   ],
                 ),
@@ -519,15 +593,21 @@ class _LiveVoiceExperienceState extends State<_LiveVoiceExperience>
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       color: const Color(0xFF111C3D),
-                      border: Border.all(color: const Color(0xFF7997FF).withValues(alpha: 0.42)),
+                      border: Border.all(
+                        color: const Color(0xFF7997FF).withValues(alpha: 0.42),
+                      ),
                       boxShadow: [
                         BoxShadow(
-                          color: const Color(0xFF4F7DFF).withValues(alpha: glow),
+                          color: const Color(
+                            0xFF4F7DFF,
+                          ).withValues(alpha: glow),
                           blurRadius: 52,
                           spreadRadius: 10,
                         ),
                         BoxShadow(
-                          color: const Color(0xFF59D7FF).withValues(alpha: glow * 0.55),
+                          color: const Color(
+                            0xFF59D7FF,
+                          ).withValues(alpha: glow * 0.55),
                           blurRadius: 78,
                           spreadRadius: 2,
                         ),
@@ -544,14 +624,22 @@ class _LiveVoiceExperienceState extends State<_LiveVoiceExperience>
               const SizedBox(height: 16),
               Text(
                 _stateLabel,
-                style: TextStyle(color: _stateColor, fontSize: 14, fontWeight: FontWeight.w900),
+                style: TextStyle(
+                  color: _stateColor,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w900,
+                ),
               ),
               const SizedBox(height: 12),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 34),
                 child: widget.speaking
                     ? _SpeakingWave(animation: _wave)
-                    : _VoiceWave(level: widget.listening ? widget.level : (widget.processing ? 0.12 : 0.04)),
+                    : _VoiceWave(
+                        level: widget.listening
+                            ? widget.level
+                            : (widget.processing ? 0.12 : 0.04),
+                      ),
               ),
               if (widget.draft.isNotEmpty &&
                   widget.draft != 'Listening…' &&
@@ -563,14 +651,20 @@ class _LiveVoiceExperienceState extends State<_LiveVoiceExperience>
                   decoration: BoxDecoration(
                     color: const Color(0xFF102B24).withValues(alpha: 0.92),
                     borderRadius: BorderRadius.circular(15),
-                    border: Border.all(color: AppTheme.emerald.withValues(alpha: 0.30)),
+                    border: Border.all(
+                      color: AppTheme.emerald.withValues(alpha: 0.30),
+                    ),
                   ),
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Padding(
                         padding: EdgeInsets.only(top: 1),
-                        child: Icon(Icons.mic_rounded, size: 16, color: AppTheme.emeraldSoft),
+                        child: Icon(
+                          Icons.mic_rounded,
+                          size: 16,
+                          color: AppTheme.emeraldSoft,
+                        ),
                       ),
                       const SizedBox(width: 8),
                       Expanded(
@@ -611,42 +705,66 @@ class _LiveVoiceExperienceState extends State<_LiveVoiceExperience>
                   margin: const EdgeInsets.symmetric(horizontal: 14),
                   decoration: BoxDecoration(
                     color: const Color(0xFF071A14).withValues(alpha: 0.84),
-                    borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-                    border: Border.all(color: AppTheme.border.withValues(alpha: 0.72)),
+                    borderRadius: const BorderRadius.vertical(
+                      top: Radius.circular(24),
+                    ),
+                    border: Border.all(
+                      color: AppTheme.border.withValues(alpha: 0.72),
+                    ),
                   ),
                   child: recent.isEmpty
                       ? const Center(
-                          child: Text('Start speaking to Cygnus', style: TextStyle(color: AppTheme.muted)),
+                          child: Text(
+                            'Start speaking to Cygnus',
+                            style: TextStyle(color: AppTheme.muted),
+                          ),
                         )
                       : ListView.builder(
                           reverse: true,
                           padding: const EdgeInsets.fromLTRB(14, 14, 14, 8),
                           itemCount: recent.length,
                           itemBuilder: (context, reverseIndex) {
-                            final message = recent[recent.length - 1 - reverseIndex];
+                            final message =
+                                recent[recent.length - 1 - reverseIndex];
                             final user = message.role == 'user';
                             return Align(
-                              alignment: user ? Alignment.centerRight : Alignment.centerLeft,
+                              alignment: user
+                                  ? Alignment.centerRight
+                                  : Alignment.centerLeft,
                               child: Container(
-                                constraints: const BoxConstraints(maxWidth: 340),
+                                constraints: const BoxConstraints(
+                                  maxWidth: 340,
+                                ),
                                 margin: const EdgeInsets.only(bottom: 8),
-                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 9,
+                                ),
                                 decoration: BoxDecoration(
                                   color: user
                                       ? AppTheme.emerald.withValues(alpha: 0.13)
-                                      : const Color(0xFF13223A).withValues(alpha: 0.92),
+                                      : const Color(
+                                          0xFF13223A,
+                                        ).withValues(alpha: 0.92),
                                   borderRadius: BorderRadius.circular(15),
                                   border: Border.all(
                                     color: user
-                                        ? AppTheme.emerald.withValues(alpha: 0.22)
-                                        : const Color(0xFF526A98).withValues(alpha: 0.28),
+                                        ? AppTheme.emerald.withValues(
+                                            alpha: 0.22,
+                                          )
+                                        : const Color(
+                                            0xFF526A98,
+                                          ).withValues(alpha: 0.28),
                                   ),
                                 ),
                                 child: Column(
                                   mainAxisSize: MainAxisSize.min,
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    _MessageMarkdown(message.text, fontSize: 12.5),
+                                    _MessageMarkdown(
+                                      message.text,
+                                      fontSize: 12.5,
+                                    ),
                                     Align(
                                       alignment: Alignment.centerRight,
                                       child: _CopyMessageButton(message.text),
@@ -689,7 +807,9 @@ class _LiveVoiceExperienceState extends State<_LiveVoiceExperience>
                           const SizedBox(width: 10),
                           Expanded(
                             child: FilledButton.icon(
-                              style: FilledButton.styleFrom(backgroundColor: AppTheme.red),
+                              style: FilledButton.styleFrom(
+                                backgroundColor: AppTheme.red,
+                              ),
                               onPressed: widget.onStopListening,
                               icon: const Icon(Icons.stop_rounded),
                               label: const Text('Finish'),
@@ -841,7 +961,10 @@ class _CygnusBar extends StatelessWidget {
                   children: [
                     Text(
                       'Cygnus',
-                      style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900),
+                      style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w900,
+                      ),
                     ),
                     SizedBox(width: 7),
                     _AgentBadge(),
@@ -850,7 +973,11 @@ class _CygnusBar extends StatelessWidget {
                 SizedBox(height: 2),
                 Text(
                   'Ask · Control · Plan · Diagnose',
-                  style: TextStyle(color: AppTheme.muted, fontSize: 10.8, fontWeight: FontWeight.w600),
+                  style: TextStyle(
+                    color: AppTheme.muted,
+                    fontSize: 10.8,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ],
             ),
@@ -875,39 +1002,56 @@ class _CygnusBar extends StatelessWidget {
               ),
               child: Text(
                 _languageLabels[languageCode] ?? 'EN',
-                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w900),
+                style: const TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w900,
+                ),
               ),
             ),
           ),
           Tooltip(
-            message: voiceConversation ? 'End live interaction' : 'Start live interaction',
+            message: voiceConversation
+                ? 'End live interaction'
+                : 'Start live interaction',
             child: InkWell(
               onTap: voiceAvailable ? onVoiceConversation : null,
               borderRadius: BorderRadius.circular(12),
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
                 decoration: BoxDecoration(
-                  color: (voiceConversation ? AppTheme.red : const Color(0xFF5F75FF))
-                      .withValues(alpha: 0.12),
+                  color:
+                      (voiceConversation
+                              ? AppTheme.red
+                              : const Color(0xFF5F75FF))
+                          .withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(
-                    color: (voiceConversation ? AppTheme.red : const Color(0xFF7193FF))
-                        .withValues(alpha: 0.28),
+                    color:
+                        (voiceConversation
+                                ? AppTheme.red
+                                : const Color(0xFF7193FF))
+                            .withValues(alpha: 0.28),
                   ),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Icon(
-                      voiceConversation ? Icons.call_end_rounded : Icons.graphic_eq_rounded,
+                      voiceConversation
+                          ? Icons.call_end_rounded
+                          : Icons.graphic_eq_rounded,
                       size: 18,
-                      color: voiceConversation ? AppTheme.red : const Color(0xFF8FC9FF),
+                      color: voiceConversation
+                          ? AppTheme.red
+                          : const Color(0xFF8FC9FF),
                     ),
                     const SizedBox(width: 5),
                     Text(
                       voiceConversation ? 'End' : 'Live',
                       style: TextStyle(
-                        color: voiceConversation ? AppTheme.red : const Color(0xFFAED7FF),
+                        color: voiceConversation
+                            ? AppTheme.red
+                            : const Color(0xFFAED7FF),
                         fontSize: 9.5,
                         fontWeight: FontWeight.w900,
                       ),
@@ -1089,7 +1233,11 @@ class _RetryInstructionCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Icon(Icons.error_outline_rounded, color: AppTheme.amber, size: 18),
+              const Icon(
+                Icons.error_outline_rounded,
+                color: AppTheme.amber,
+                size: 18,
+              ),
               const SizedBox(width: 7),
               Expanded(
                 child: Text(
@@ -1109,7 +1257,10 @@ class _RetryInstructionCard extends StatelessWidget {
           if (resolved != null)
             Padding(
               padding: const EdgeInsets.only(top: 8),
-              child: Text(resolved, style: const TextStyle(color: AppTheme.muted)),
+              child: Text(
+                resolved,
+                style: const TextStyle(color: AppTheme.muted),
+              ),
             )
           else if (isPending)
             Padding(
@@ -1158,7 +1309,9 @@ class _TextBubble extends StatelessWidget {
       constraints: const BoxConstraints(maxWidth: 430),
       padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 12),
       decoration: BoxDecoration(
-        color: isUser ? AppTheme.emerald.withValues(alpha: 0.16) : AppTheme.surface,
+        color: isUser
+            ? AppTheme.emerald.withValues(alpha: 0.16)
+            : AppTheme.surface,
         borderRadius: BorderRadius.only(
           topLeft: const Radius.circular(18),
           topRight: const Radius.circular(18),
@@ -1205,9 +1358,18 @@ class _MessageMarkdown extends StatelessWidget {
       selectable: true,
       styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
         p: bodyStyle,
-        h1: bodyStyle.copyWith(fontSize: fontSize * 1.55, fontWeight: FontWeight.w800),
-        h2: bodyStyle.copyWith(fontSize: fontSize * 1.35, fontWeight: FontWeight.w800),
-        h3: bodyStyle.copyWith(fontSize: fontSize * 1.15, fontWeight: FontWeight.w700),
+        h1: bodyStyle.copyWith(
+          fontSize: fontSize * 1.55,
+          fontWeight: FontWeight.w800,
+        ),
+        h2: bodyStyle.copyWith(
+          fontSize: fontSize * 1.35,
+          fontWeight: FontWeight.w800,
+        ),
+        h3: bodyStyle.copyWith(
+          fontSize: fontSize * 1.15,
+          fontWeight: FontWeight.w700,
+        ),
         blockquote: bodyStyle.copyWith(color: AppTheme.muted),
         listBullet: bodyStyle.copyWith(color: AppTheme.emeraldSoft),
         tableBody: bodyStyle,
@@ -1264,10 +1426,17 @@ class _LiveStatusCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Icon(Icons.sensors_rounded, color: AppTheme.emerald, size: 19),
+              const Icon(
+                Icons.sensors_rounded,
+                color: AppTheme.emerald,
+                size: 19,
+              ),
               const SizedBox(width: 8),
               const Expanded(
-                child: Text('Live farm status', style: TextStyle(fontWeight: FontWeight.w900)),
+                child: Text(
+                  'Live farm status',
+                  style: TextStyle(fontWeight: FontWeight.w900),
+                ),
               ),
               _StatusDot(online: agro.deviceOnline),
             ],
@@ -1277,10 +1446,22 @@ class _LiveStatusCard extends StatelessWidget {
             spacing: 8,
             runSpacing: 8,
             children: [
-              _MetricChip(icon: Icons.thermostat_rounded, label: '${t.temperature.toStringAsFixed(1)}°C'),
-              _MetricChip(icon: Icons.water_drop_outlined, label: '${t.humidity.toStringAsFixed(0)}% humidity'),
-              _MetricChip(icon: Icons.eco_rounded, label: '${t.soil.toStringAsFixed(0)}% soil'),
-              _MetricChip(icon: Icons.waves_rounded, label: '${t.waterLevel.toStringAsFixed(0)}% water'),
+              _MetricChip(
+                icon: Icons.thermostat_rounded,
+                label: '${t.temperature.toStringAsFixed(1)}°C',
+              ),
+              _MetricChip(
+                icon: Icons.water_drop_outlined,
+                label: '${t.humidity.toStringAsFixed(0)}% humidity',
+              ),
+              _MetricChip(
+                icon: Icons.eco_rounded,
+                label: '${t.soil.toStringAsFixed(0)}% soil',
+              ),
+              _MetricChip(
+                icon: Icons.waves_rounded,
+                label: '${t.waterLevel.toStringAsFixed(0)}% water',
+              ),
             ],
           ),
           const SizedBox(height: 12),
@@ -1353,7 +1534,10 @@ class _TrendCard extends StatelessWidget {
             height: 145,
             child: spots.length < 2
                 ? const Center(
-                    child: Text('Not enough recent readings yet.', style: TextStyle(color: AppTheme.muted)),
+                    child: Text(
+                      'Not enough recent readings yet.',
+                      style: TextStyle(color: AppTheme.muted),
+                    ),
                   )
                 : LineChart(
                     LineChartData(
@@ -1368,10 +1552,18 @@ class _TrendCard extends StatelessWidget {
                       ),
                       borderData: FlBorderData(show: false),
                       titlesData: const FlTitlesData(
-                        topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                        rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                        bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                        leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                        topTitles: AxisTitles(
+                          sideTitles: SideTitles(showTitles: false),
+                        ),
+                        rightTitles: AxisTitles(
+                          sideTitles: SideTitles(showTitles: false),
+                        ),
+                        bottomTitles: AxisTitles(
+                          sideTitles: SideTitles(showTitles: false),
+                        ),
+                        leftTitles: AxisTitles(
+                          sideTitles: SideTitles(showTitles: false),
+                        ),
                       ),
                       lineBarsData: [
                         LineChartBarData(
@@ -1442,9 +1634,18 @@ class _LeafResultCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(crop, style: const TextStyle(fontWeight: FontWeight.w900)),
+                    Text(
+                      crop,
+                      style: const TextStyle(fontWeight: FontWeight.w900),
+                    ),
                     const SizedBox(height: 2),
-                    Text(condition, style: const TextStyle(color: AppTheme.emeraldSoft, fontWeight: FontWeight.w700)),
+                    Text(
+                      condition,
+                      style: const TextStyle(
+                        color: AppTheme.emeraldSoft,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -1456,21 +1657,29 @@ class _LeafResultCard extends StatelessWidget {
                 ),
                 child: Text(
                   '${(confidence * 100).toStringAsFixed(0)}%',
-                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w900),
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w900,
+                  ),
                 ),
               ),
             ],
           ),
           if (treatment.isNotEmpty) ...[
             const SizedBox(height: 13),
-            const Text('Care', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 12)),
+            const Text(
+              'Care',
+              style: TextStyle(fontWeight: FontWeight.w900, fontSize: 12),
+            ),
             const SizedBox(height: 5),
             for (final item in treatment.take(3)) _AdviceLine(text: item),
           ],
           if (prevention.isNotEmpty) ...[
             const SizedBox(height: 9),
             TextButton.icon(
-              onPressed: () => onPrompt('Tell me the prevention steps for this leaf result.'),
+              onPressed: () => onPrompt(
+                'Tell me the prevention steps for this leaf result.',
+              ),
               icon: const Icon(Icons.shield_outlined, size: 17),
               label: const Text('Prevention tips'),
             ),
@@ -1509,7 +1718,9 @@ class _ConfirmationCard extends StatelessWidget {
         color: AppTheme.surface,
         borderRadius: BorderRadius.circular(18),
         border: Border.all(
-          color: (destructive ? AppTheme.red : AppTheme.emerald).withValues(alpha: 0.30),
+          color: (destructive ? AppTheme.red : AppTheme.emerald).withValues(
+            alpha: 0.30,
+          ),
         ),
       ),
       child: Column(
@@ -1518,7 +1729,9 @@ class _ConfirmationCard extends StatelessWidget {
           Row(
             children: [
               Icon(
-                destructive ? Icons.delete_outline_rounded : Icons.event_available_rounded,
+                destructive
+                    ? Icons.delete_outline_rounded
+                    : Icons.event_available_rounded,
                 color: destructive ? AppTheme.red : AppTheme.emerald,
                 size: 21,
               ),
@@ -1561,9 +1774,16 @@ class _ConfirmationCard extends StatelessWidget {
           else
             const Row(
               children: [
-                Icon(Icons.check_circle_outline_rounded, color: AppTheme.muted, size: 17),
+                Icon(
+                  Icons.check_circle_outline_rounded,
+                  color: AppTheme.muted,
+                  size: 17,
+                ),
                 SizedBox(width: 6),
-                Text('Completed', style: TextStyle(color: AppTheme.muted, fontSize: 11)),
+                Text(
+                  'Completed',
+                  style: TextStyle(color: AppTheme.muted, fontSize: 11),
+                ),
               ],
             ),
         ],
@@ -1587,12 +1807,7 @@ class _ImageMessage extends StatelessWidget {
       borderRadius: BorderRadius.circular(18),
       child: Stack(
         children: [
-          Image.file(
-            File(path),
-            width: 220,
-            height: 180,
-            fit: BoxFit.cover,
-          ),
+          Image.file(File(path), width: 220, height: 180, fit: BoxFit.cover),
           Positioned(
             left: 8,
             bottom: 8,
@@ -1602,7 +1817,10 @@ class _ImageMessage extends StatelessWidget {
                 color: Colors.black.withValues(alpha: 0.58),
                 borderRadius: BorderRadius.circular(99),
               ),
-              child: const Text('Checking leaf', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700)),
+              child: const Text(
+                'Checking leaf',
+                style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700),
+              ),
             ),
           ),
         ],
@@ -1629,9 +1847,16 @@ class _ThinkingBubble extends StatelessWidget {
         child: const Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            SizedBox(width: 15, height: 15, child: CircularProgressIndicator(strokeWidth: 2)),
+            SizedBox(
+              width: 15,
+              height: 15,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
             SizedBox(width: 9),
-            Text('Cygnus is working…', style: TextStyle(color: AppTheme.muted, fontSize: 12)),
+            Text(
+              'Cygnus is working…',
+              style: TextStyle(color: AppTheme.muted, fontSize: 12),
+            ),
           ],
         ),
       ),
@@ -1668,7 +1893,9 @@ class _VoiceStrip extends StatelessWidget {
           ],
         ),
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: const Color(0xFF6D7DFF).withValues(alpha: 0.34)),
+        border: Border.all(
+          color: const Color(0xFF6D7DFF).withValues(alpha: 0.34),
+        ),
         boxShadow: [
           BoxShadow(
             color: const Color(0xFF536DFF).withValues(alpha: 0.10),
@@ -1704,8 +1931,13 @@ class _VoiceStrip extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  processing ? 'Understanding your voice…' : 'Listening · speak naturally',
-                  style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w800),
+                  processing
+                      ? 'Understanding your voice…'
+                      : 'Listening · speak naturally',
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
                 const SizedBox(height: 7),
                 if (processing)
@@ -1715,13 +1947,19 @@ class _VoiceStrip extends StatelessWidget {
                   )
                 else
                   _VoiceWave(level: normalized),
-                if (text.isNotEmpty && text != 'Listening…' && text != 'Understanding your voice…') ...[
+                if (text.isNotEmpty &&
+                    text != 'Listening…' &&
+                    text != 'Understanding your voice…') ...[
                   const SizedBox(height: 6),
                   Text(
                     text,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: AppTheme.emeraldSoft, fontSize: 11.5, fontWeight: FontWeight.w600),
+                    style: const TextStyle(
+                      color: AppTheme.emeraldSoft,
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ],
               ],
@@ -1732,13 +1970,21 @@ class _VoiceStrip extends StatelessWidget {
               visualDensity: VisualDensity.compact,
               tooltip: 'Finish and send',
               onPressed: onStop,
-              icon: const Icon(Icons.stop_circle_rounded, color: AppTheme.red, size: 26),
+              icon: const Icon(
+                Icons.stop_circle_rounded,
+                color: AppTheme.red,
+                size: 26,
+              ),
             ),
           IconButton(
             visualDensity: VisualDensity.compact,
             tooltip: 'Cancel voice input',
             onPressed: onCancel,
-            icon: const Icon(Icons.close_rounded, color: AppTheme.muted, size: 22),
+            icon: const Icon(
+              Icons.close_rounded,
+              color: AppTheme.muted,
+              size: 22,
+            ),
           ),
         ],
       ),
@@ -1746,35 +1992,126 @@ class _VoiceStrip extends StatelessWidget {
   }
 }
 
-class _QueuedInstructionsBanner extends StatelessWidget {
-  const _QueuedInstructionsBanner({required this.instructions});
+class _InstructionQueueOverlay extends StatelessWidget {
+  const _InstructionQueueOverlay({
+    required this.active,
+    required this.waiting,
+    required this.completed,
+    required this.skipped,
+    required this.total,
+    required this.progress,
+    required this.running,
+    required this.waitingForConfirmation,
+    required this.waitingForDecision,
+    required this.restoring,
+    required this.failedInstruction,
+  });
 
-  final List<String> instructions;
+  final String? active;
+  final List<String> waiting;
+  final int completed;
+  final int skipped;
+  final int total;
+  final double progress;
+  final bool running;
+  final bool waitingForConfirmation;
+  final bool waitingForDecision;
+  final bool restoring;
+  final String? failedInstruction;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(12, 0, 12, 6),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: AppTheme.amber.withValues(alpha: 0.07),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppTheme.amber.withValues(alpha: 0.2)),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.queue_rounded, color: AppTheme.amber, size: 17),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              '${instructions.length} queued · ${instructions.first}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: AppTheme.text, fontSize: 11.5),
+    final title = waitingForDecision
+        ? 'Action needs your choice'
+        : waitingForConfirmation
+        ? 'Waiting for schedule confirmation'
+        : restoring
+        ? 'Restoring saved instructions'
+        : running
+        ? 'Processing instruction queue'
+        : 'Instructions queued';
+    final current = waitingForDecision
+        ? failedInstruction
+        : active ?? (waiting.isNotEmpty ? waiting.first : null);
+    return IgnorePointer(
+      child: Material(
+        color: Colors.transparent,
+        elevation: 12,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(13, 11, 13, 10),
+          decoration: BoxDecoration(
+            color: const Color(0xF20B1E17),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: waitingForDecision
+                  ? AppTheme.amber.withValues(alpha: 0.52)
+                  : AppTheme.emerald.withValues(alpha: 0.35),
             ),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x44000000),
+                blurRadius: 16,
+                offset: Offset(0, 7),
+              ),
+            ],
           ),
-        ],
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    waitingForDecision
+                        ? Icons.warning_amber_rounded
+                        : waitingForConfirmation
+                        ? Icons.event_available_rounded
+                        : Icons.queue_play_next_rounded,
+                    size: 18,
+                    color: waitingForDecision
+                        ? AppTheme.amber
+                        : AppTheme.emeraldSoft,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                  Text(
+                    '$completed done · $skipped skipped · ${waiting.length} waiting',
+                    style: const TextStyle(
+                      color: AppTheme.muted,
+                      fontSize: 10.5,
+                    ),
+                  ),
+                ],
+              ),
+              if (current != null) ...[
+                const SizedBox(height: 7),
+                Text(
+                  current,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: AppTheme.text, fontSize: 11.5),
+                ),
+              ],
+              const SizedBox(height: 8),
+              LinearProgressIndicator(
+                value: total == 0 ? null : progress,
+                minHeight: 3,
+                borderRadius: BorderRadius.circular(99),
+                backgroundColor: AppTheme.border,
+                color: waitingForDecision ? AppTheme.amber : AppTheme.emerald,
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1865,7 +2202,10 @@ class _Composer extends StatelessWidget {
             const SizedBox(width: 7),
             Expanded(
               child: Container(
-                constraints: const BoxConstraints(minHeight: 48, maxHeight: 130),
+                constraints: const BoxConstraints(
+                  minHeight: 48,
+                  maxHeight: 130,
+                ),
                 decoration: BoxDecoration(
                   color: AppTheme.surface,
                   borderRadius: BorderRadius.circular(18),
@@ -1884,7 +2224,10 @@ class _Composer extends StatelessWidget {
                         : (busy ? 'Add instruction to queue…' : 'Ask Cygnus…'),
                     hintStyle: TextStyle(color: AppTheme.muted),
                     border: InputBorder.none,
-                    contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 13,
+                    ),
                   ),
                 ),
               ),
@@ -1892,7 +2235,9 @@ class _Composer extends StatelessWidget {
             const SizedBox(width: 7),
             IconButton.filledTonal(
               tooltip: listening ? 'Stop listening' : 'Talk to Cygnus',
-              onPressed: busy || voiceProcessing || !voiceAvailable ? null : onMic,
+              onPressed: busy || voiceProcessing || !voiceAvailable
+                  ? null
+                  : onMic,
               icon: Icon(
                 voiceProcessing
                     ? Icons.more_horiz_rounded
@@ -1932,7 +2277,10 @@ class _MetricChip extends StatelessWidget {
         children: [
           Icon(icon, size: 15, color: AppTheme.emeraldSoft),
           const SizedBox(width: 5),
-          Text(label, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700)),
+          Text(
+            label,
+            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+          ),
         ],
       ),
     );
@@ -1950,9 +2298,15 @@ class _MotorDot extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
       decoration: BoxDecoration(
-        color: (on ? AppTheme.emerald : AppTheme.surface2).withValues(alpha: on ? 0.12 : 1),
+        color: (on ? AppTheme.emerald : AppTheme.surface2).withValues(
+          alpha: on ? 0.12 : 1,
+        ),
         borderRadius: BorderRadius.circular(99),
-        border: Border.all(color: on ? AppTheme.emerald.withValues(alpha: 0.28) : AppTheme.border),
+        border: Border.all(
+          color: on
+              ? AppTheme.emerald.withValues(alpha: 0.28)
+              : AppTheme.border,
+        ),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -1960,10 +2314,16 @@ class _MotorDot extends StatelessWidget {
           Container(
             width: 6,
             height: 6,
-            decoration: BoxDecoration(shape: BoxShape.circle, color: on ? AppTheme.emerald : AppTheme.muted),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: on ? AppTheme.emerald : AppTheme.muted,
+            ),
           ),
           const SizedBox(width: 5),
-          Text('$label ${on ? 'ON' : 'OFF'}', style: const TextStyle(fontSize: 9.5, fontWeight: FontWeight.w800)),
+          Text(
+            '$label ${on ? 'ON' : 'OFF'}',
+            style: const TextStyle(fontSize: 9.5, fontWeight: FontWeight.w800),
+          ),
         ],
       ),
     );
@@ -1980,7 +2340,9 @@ class _StatusDot extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
       decoration: BoxDecoration(
-        color: (online ? AppTheme.emerald : AppTheme.red).withValues(alpha: 0.08),
+        color: (online ? AppTheme.emerald : AppTheme.red).withValues(
+          alpha: 0.08,
+        ),
         borderRadius: BorderRadius.circular(99),
       ),
       child: Row(
@@ -1989,7 +2351,10 @@ class _StatusDot extends StatelessWidget {
           Container(
             width: 6,
             height: 6,
-            decoration: BoxDecoration(shape: BoxShape.circle, color: online ? AppTheme.emerald : AppTheme.red),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: online ? AppTheme.emerald : AppTheme.red,
+            ),
           ),
           const SizedBox(width: 5),
           Text(
@@ -2023,7 +2388,16 @@ class _AdviceLine extends StatelessWidget {
             child: Icon(Icons.circle, size: 5, color: AppTheme.emerald),
           ),
           const SizedBox(width: 8),
-          Expanded(child: Text(text, style: const TextStyle(color: AppTheme.muted, height: 1.35, fontSize: 11.5))),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(
+                color: AppTheme.muted,
+                height: 1.35,
+                fontSize: 11.5,
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -2031,7 +2405,12 @@ class _AdviceLine extends StatelessWidget {
 }
 
 class _SheetAction extends StatelessWidget {
-  const _SheetAction({required this.icon, required this.title, required this.subtitle, required this.onTap});
+  const _SheetAction({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
 
   final IconData icon;
   final String title;
@@ -2046,47 +2425,53 @@ class _SheetAction extends StatelessWidget {
       tileColor: AppTheme.surface2,
       leading: Icon(icon, color: AppTheme.emerald),
       title: Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
-      subtitle: Text(subtitle, style: const TextStyle(color: AppTheme.muted, fontSize: 11)),
+      subtitle: Text(
+        subtitle,
+        style: const TextStyle(color: AppTheme.muted, fontSize: 11),
+      ),
       trailing: const Icon(Icons.chevron_right_rounded, color: AppTheme.muted),
     );
   }
 }
 
 BoxDecoration _richCardDecoration() => BoxDecoration(
-      gradient: const LinearGradient(
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-        colors: [Color(0xFF0F281E), Color(0xFF0B1E17)],
-      ),
-      borderRadius: BorderRadius.circular(18),
-      border: Border.all(color: AppTheme.border.withValues(alpha: 0.9)),
-    );
+  gradient: const LinearGradient(
+    begin: Alignment.topLeft,
+    end: Alignment.bottomRight,
+    colors: [Color(0xFF0F281E), Color(0xFF0B1E17)],
+  ),
+  borderRadius: BorderRadius.circular(18),
+  border: Border.all(color: AppTheme.border.withValues(alpha: 0.9)),
+);
 
 List<String> _toStrings(dynamic value) {
   if (value is! List) return const <String>[];
-  return value.map((e) => e.toString()).where((e) => e.trim().isNotEmpty).toList(growable: false);
+  return value
+      .map((e) => e.toString())
+      .where((e) => e.trim().isNotEmpty)
+      .toList(growable: false);
 }
 
 Color _metricColor(String metric) => switch (metric) {
-      'humidity' => AppTheme.cyan,
-      'soil' => AppTheme.emerald,
-      'water' || 'waterlevel' || 'water_level' => const Color(0xFF5EB6FF),
-      _ => const Color(0xFFFF8C92),
-    };
+  'humidity' => AppTheme.cyan,
+  'soil' => AppTheme.emerald,
+  'water' || 'waterlevel' || 'water_level' => const Color(0xFF5EB6FF),
+  _ => const Color(0xFFFF8C92),
+};
 
 IconData _metricIcon(String metric) => switch (metric) {
-      'humidity' => Icons.water_drop_outlined,
-      'soil' => Icons.eco_rounded,
-      'water' || 'waterlevel' || 'water_level' => Icons.waves_rounded,
-      _ => Icons.thermostat_rounded,
-    };
+  'humidity' => Icons.water_drop_outlined,
+  'soil' => Icons.eco_rounded,
+  'water' || 'waterlevel' || 'water_level' => Icons.waves_rounded,
+  _ => Icons.thermostat_rounded,
+};
 
 String _metricName(String metric) => switch (metric) {
-      'humidity' => 'Humidity',
-      'soil' => 'Soil moisture',
-      'water' || 'waterlevel' || 'water_level' => 'Water level',
-      _ => 'Temperature',
-    };
+  'humidity' => 'Humidity',
+  'soil' => 'Soil moisture',
+  'water' || 'waterlevel' || 'water_level' => 'Water level',
+  _ => 'Temperature',
+};
 
 String _relativeTime(DateTime value) {
   final diff = DateTime.now().difference(value);

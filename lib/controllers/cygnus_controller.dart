@@ -20,10 +20,10 @@ class CygnusController extends ChangeNotifier {
     CygnusVoiceService? voiceService,
     PlantAiService? plantAiService,
     GroqCygnusService? aiService,
-  })  : _store = sessionStore ?? CygnusSessionStore(),
-        _voice = voiceService ?? CygnusVoiceService(),
-        _plantAi = plantAiService ?? PlantAiService(),
-        _ai = aiService ?? GroqCygnusService();
+  }) : _store = sessionStore ?? CygnusSessionStore(),
+       _voice = voiceService ?? CygnusVoiceService(),
+       _plantAi = plantAiService ?? PlantAiService(),
+       _ai = aiService ?? GroqCygnusService();
 
   final CygnusSessionStore _store;
   final CygnusVoiceService _voice;
@@ -35,12 +35,14 @@ class CygnusController extends ChangeNotifier {
 
   final List<CygnusMessage> _messages = <CygnusMessage>[];
   final List<CygnusSessionSummary> _sessions = <CygnusSessionSummary>[];
-  final List<_QueuedCygnusInstruction> _instructionQueue =
-      <_QueuedCygnusInstruction>[];
+  final List<CygnusQueuedInstruction> _instructionQueue =
+      <CygnusQueuedInstruction>[];
+  Future<void> _queuePersistenceTail = Future<void>.value();
 
   bool _initialized = false;
   bool _busy = false;
   bool _processingQueue = false;
+  bool _restoringQueue = false;
   bool _activeInstructionHadSideEffect = false;
   String? _activeToolFailure;
   String? _deferredDecision;
@@ -58,6 +60,10 @@ class CygnusController extends ChangeNotifier {
   String? _error;
   PendingCygnusAction? _pendingAction;
   _PendingCygnusRetry? _pendingRetry;
+  CygnusQueuedInstruction? _activeInstruction;
+  int _completedInstructionCount = 0;
+  int _skippedInstructionCount = 0;
+  int _instructionBatchSize = 0;
   Map<String, dynamic>? _lastLeafResult;
 
   ValueChanged<String>? navigationHandler;
@@ -66,10 +72,29 @@ class CygnusController extends ChangeNotifier {
   List<CygnusSessionSummary> get sessions => List.unmodifiable(_sessions);
   bool get initialized => _initialized;
   bool get busy => _busy;
-  int get queuedInstructionCount => _instructionQueue.length;
+  String? get _blockedInstructionId =>
+      _activeInstruction?.id ?? _pendingRetry?.instruction?.id;
+  int get queuedInstructionCount => _instructionQueue
+      .where((instruction) => instruction.id != _blockedInstructionId)
+      .length;
   List<String> get queuedInstructions => List.unmodifiable(
-        _instructionQueue.map((instruction) => instruction.text),
-      );
+    _instructionQueue
+        .where((instruction) => instruction.id != _blockedInstructionId)
+        .map((instruction) => instruction.text),
+  );
+  String? get activeInstruction => _activeInstruction?.text;
+  int get completedInstructionCount => _completedInstructionCount;
+  int get skippedInstructionCount => _skippedInstructionCount;
+  int get instructionBatchSize => _instructionBatchSize;
+  double get instructionProgress => _instructionBatchSize == 0
+      ? 0
+      : ((_completedInstructionCount + _skippedInstructionCount) /
+                _instructionBatchSize)
+            .clamp(0.0, 1.0)
+            .toDouble();
+  bool get restoringQueue => _restoringQueue;
+  bool get processingInstructionQueue => _processingQueue;
+  String? get pendingRetryInstruction => _pendingRetry?.instruction?.text;
   bool get renderingReply => _renderingReply;
   bool get loadingSession => _loadingSession;
   bool get voiceReply => _voiceReply;
@@ -141,6 +166,35 @@ class CygnusController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> _restoreInstructionQueue() async {
+    if (_instructionQueue.isEmpty) return;
+    for (final instruction in _instructionQueue) {
+      final alreadyShown = _messages.any(
+        (message) => message.payload['instructionId'] == instruction.id,
+      );
+      if (!alreadyShown) {
+        await _append(
+          _userMessage(instruction.text, instructionId: instruction.id),
+        );
+      }
+    }
+    _activeInstruction = _instructionQueue.first.started
+        ? _instructionQueue.first
+        : null;
+    _restoringQueue = true;
+    _activeInstructionHadSideEffect = _instructionQueue.first.started;
+    try {
+      await _offerInstructionRetry(
+        _instructionQueue.first,
+        _instructionQueue.first.started
+            ? 'The app was interrupted while this instruction was running. Check the motor or schedule state before retrying.'
+            : 'This instruction was saved but had not started before the app closed.',
+      );
+    } finally {
+      _restoringQueue = false;
+    }
+  }
+
   Future<void> openSession(String id) async {
     if (_busy ||
         _instructionQueue.isNotEmpty ||
@@ -157,13 +211,25 @@ class CygnusController extends ChangeNotifier {
       _messages
         ..clear()
         ..addAll(await _store.loadMessages(id));
+      _instructionQueue
+        ..clear()
+        ..addAll(await _store.loadInstructionQueue(id));
+      _activeInstruction = null;
+      _completedInstructionCount = 0;
+      _skippedInstructionCount = 0;
+      _instructionBatchSize = _instructionQueue.length;
       _restoreLeafContextFromMessages();
       final match = _sessions.where((s) => s.id == id);
       if (match.isNotEmpty) _languageCode = match.first.languageCode;
+    } catch (error, stack) {
+      debugPrint('Cygnus session load failed: $error\n$stack');
+      _error = 'Could not restore this chat and its pending instructions.';
+      await _append(_assistantMessage(_error!));
     } finally {
       _loadingSession = false;
       notifyListeners();
     }
+    if (_sessionId == id) await _restoreInstructionQueue();
   }
 
   Future<void> deleteCurrentSession() async {
@@ -205,7 +271,9 @@ class CygnusController extends ChangeNotifier {
   Future<void> sendText(String rawText, {bool fromVoice = false}) async {
     final text = rawText.trim();
     if (text.isEmpty) return;
-    if (_pendingAction != null && _isApproval(text)) {
+    if (_sessionId == null) await _createNewChat();
+    final decision = parseCygnusDecision(text);
+    if (_pendingAction != null && decision == CygnusDecision.approve) {
       if (_busy) {
         _deferredDecision = 'confirm';
         return;
@@ -213,7 +281,7 @@ class CygnusController extends ChangeNotifier {
       await confirmPendingAction();
       return;
     }
-    if (_pendingAction != null && _isRejection(text)) {
+    if (_pendingAction != null && decision == CygnusDecision.skip) {
       if (_busy) {
         _deferredDecision = 'cancel';
         return;
@@ -221,7 +289,7 @@ class CygnusController extends ChangeNotifier {
       await cancelPendingAction();
       return;
     }
-    if (_pendingRetry != null && _isApproval(text)) {
+    if (_pendingRetry != null && decision == CygnusDecision.approve) {
       if (_busy) {
         _deferredDecision = 'retry';
         return;
@@ -229,7 +297,7 @@ class CygnusController extends ChangeNotifier {
       await retryFailedInstruction();
       return;
     }
-    if (_pendingRetry != null && _isRejection(text)) {
+    if (_pendingRetry != null && decision == CygnusDecision.skip) {
       if (_busy) {
         _deferredDecision = 'dismiss';
         return;
@@ -238,11 +306,55 @@ class CygnusController extends ChangeNotifier {
       return;
     }
 
-    _instructionQueue.add(
-      _QueuedCygnusInstruction(text: text, fromVoice: fromVoice),
-    );
+    final instructions = splitCygnusInstructions(text);
+    if (instructions.isEmpty) return;
+    if (_instructionQueue.isEmpty && _activeInstruction == null) {
+      _completedInstructionCount = 0;
+      _skippedInstructionCount = 0;
+      _instructionBatchSize = 0;
+    }
+    for (final instruction in instructions) {
+      _instructionQueue.add(
+        CygnusQueuedInstruction(
+          id: _id('instruction'),
+          text: instruction,
+          fromVoice: fromVoice,
+        ),
+      );
+    }
+    _instructionBatchSize += instructions.length;
+    try {
+      await _persistInstructionQueue();
+    } catch (error, stack) {
+      debugPrint('Cygnus instruction queue persistence failed: $error\n$stack');
+      _error =
+          'Could not save the instruction queue. No queued actions were started.';
+      await _append(_assistantMessage(_error!));
+      return;
+    }
     notifyListeners();
     await _drainInstructionQueue();
+  }
+
+  Future<void> _persistInstructionQueue([
+    List<CygnusQueuedInstruction>? instructions,
+  ]) async {
+    final id = _sessionId;
+    if (id == null) {
+      throw StateError(
+        'Cannot save queued instructions without an active chat.',
+      );
+    }
+    final snapshot = List<CygnusQueuedInstruction>.of(
+      instructions ?? _instructionQueue,
+    );
+    final write = _queuePersistenceTail
+        .catchError((Object error) {
+          debugPrint('Previous Cygnus queue write failed: $error');
+        })
+        .then((_) => _store.saveInstructionQueue(id, snapshot));
+    _queuePersistenceTail = write;
+    await write;
   }
 
   Future<void> _drainInstructionQueue() async {
@@ -262,14 +374,34 @@ class CygnusController extends ChangeNotifier {
           _pendingAction == null &&
           _pendingRetry == null &&
           !_disposed) {
-        final instruction = _instructionQueue.removeAt(0);
+        final instruction = _instructionQueue.first;
+        _activeInstruction = instruction.copyWith(started: true);
+        _instructionQueue[0] = _activeInstruction!;
+        try {
+          await _persistInstructionQueue();
+        } catch (error, stack) {
+          debugPrint(
+            'Could not mark queued instruction as active: $error\n$stack',
+          );
+          _instructionQueue[0] = instruction;
+          _activeInstruction = null;
+          _error =
+              'Could not safely start the saved queue. No new action was sent.';
+          await _append(_assistantMessage(_error!));
+          break;
+        }
+        notifyListeners();
         _activeInstructionHadSideEffect = false;
         _activeToolFailure = null;
         try {
           await _processInstruction(
             instruction.text,
             fromVoice: instruction.fromVoice,
+            instructionId: instruction.id,
           );
+          if (_pendingAction == null && _pendingRetry == null) {
+            await _completeActiveInstruction();
+          }
         } catch (error, stack) {
           debugPrint('Cygnus queued instruction failed: $error\n$stack');
           final message = _friendlyAiError(error);
@@ -286,7 +418,8 @@ class CygnusController extends ChangeNotifier {
       _busy = false;
       notifyListeners();
       _flushDeferredDecision();
-      if (_instructionQueue.isEmpty &&
+      if (queuedInstructionCount == 0 &&
+          _instructionQueue.isEmpty &&
           _pendingAction == null &&
           _pendingRetry == null &&
           _voiceConversation &&
@@ -300,9 +433,40 @@ class CygnusController extends ChangeNotifier {
     }
   }
 
+  Future<void> _completeActiveInstruction({bool skipped = false}) async {
+    final active = _activeInstruction;
+    if (active == null) return;
+    final sessionId = _sessionId;
+    if (sessionId == null) {
+      throw StateError(
+        'Cannot complete an instruction without an active chat.',
+      );
+    }
+    final remaining = withoutCygnusInstruction(_instructionQueue, active.id);
+    await _persistInstructionQueue(remaining);
+    _instructionQueue
+      ..clear()
+      ..addAll(remaining);
+    _activeInstruction = null;
+    if (skipped) {
+      _skippedInstructionCount++;
+    } else {
+      _completedInstructionCount++;
+    }
+    notifyListeners();
+  }
+
+  Future<void> _skipActiveInstruction() async {
+    _activeInstruction ??= _instructionQueue.isNotEmpty
+        ? _instructionQueue.first
+        : null;
+    await _completeActiveInstruction(skipped: true);
+  }
+
   Future<void> _processInstruction(
     String text, {
     required bool fromVoice,
+    required String instructionId,
     bool appendUserMessage = true,
     int retryCount = 0,
   }) async {
@@ -313,10 +477,13 @@ class CygnusController extends ChangeNotifier {
       await setLanguage(requestedLanguage);
     }
 
-    if (appendUserMessage) {
-      final user = _userMessage(text);
+    final alreadyShown = _messages.any(
+      (message) => message.payload['instructionId'] == instructionId,
+    );
+    if (!alreadyShown) {
+      final user = _userMessage(text, instructionId: instructionId);
       await _append(user);
-      await _ensureSessionTitle(text);
+      if (appendUserMessage) await _ensureSessionTitle(text);
     }
 
     final scopeReply = _localScopeReply(text);
@@ -346,7 +513,7 @@ class CygnusController extends ChangeNotifier {
       await _append(_assistantMessage(fastReply));
       if (_activeToolFailure != null && _pendingAction == null) {
         await _offerInstructionRetry(
-          _QueuedCygnusInstruction(text: text, fromVoice: fromVoice),
+          _activeInstruction!,
           _activeToolFailure!,
           retryCount: retryCount,
         );
@@ -377,7 +544,7 @@ class CygnusController extends ChangeNotifier {
       await _appendAnimatedAssistant(reply);
       if (_activeToolFailure != null && _pendingAction == null) {
         await _offerInstructionRetry(
-          _QueuedCygnusInstruction(text: text, fromVoice: fromVoice),
+          _activeInstruction!,
           _activeToolFailure!,
           retryCount: retryCount,
         );
@@ -391,7 +558,7 @@ class CygnusController extends ChangeNotifier {
       await _append(_assistantMessage(_error!));
       if (_pendingAction == null) {
         await _offerInstructionRetry(
-          _QueuedCygnusInstruction(text: text, fromVoice: fromVoice),
+          _activeInstruction!,
           _error!,
           retryCount: retryCount,
         );
@@ -439,7 +606,9 @@ class CygnusController extends ChangeNotifier {
     if (_disposed || !_voiceConversation) return;
     _speaking = false;
     notifyListeners();
-    if (outcome != CygnusSpeechOutcome.interrupted && !_listening && !_voiceProcessing) {
+    if (outcome != CygnusSpeechOutcome.interrupted &&
+        !_listening &&
+        !_voiceProcessing) {
       if (_instructionQueue.isNotEmpty) return;
       await startVoiceInput(keepConversation: true, stopCurrentSpeech: false);
     }
@@ -447,10 +616,11 @@ class CygnusController extends ChangeNotifier {
 
   String? _explicitLanguageRequest(String text) {
     final value = text.toLowerCase();
-    final asksToSwitch = RegExp(
-      r'\b(pesu|pesunga|sollu|solunga|speak|talk|reply|language|bolo|baat|batao|parayu|mathadu|helu)\b',
-      caseSensitive: false,
-    ).hasMatch(value) ||
+    final asksToSwitch =
+        RegExp(
+          r'\b(pesu|pesunga|sollu|solunga|speak|talk|reply|language|bolo|baat|batao|parayu|mathadu|helu)\b',
+          caseSensitive: false,
+        ).hasMatch(value) ||
         value.contains('பேசு') ||
         value.contains('சொல்லு') ||
         value.contains('बोल') ||
@@ -462,7 +632,10 @@ class CygnusController extends ChangeNotifier {
     if (!asksToSwitch) return null;
     if (value.contains('tamil') || value.contains('தமிழ்')) return 'ta';
     if (value.contains('english')) return 'en';
-    if (value.contains('hindi') || value.contains('हिन्दी') || value.contains('हिंदी')) return 'hi';
+    if (value.contains('hindi') ||
+        value.contains('हिन्दी') ||
+        value.contains('हिंदी'))
+      return 'hi';
     if (value.contains('malayalam') || value.contains('മലയാളം')) return 'ml';
     if (value.contains('kannada') || value.contains('ಕನ್ನಡ')) return 'kn';
     return null;
@@ -513,10 +686,14 @@ class CygnusController extends ChangeNotifier {
       r'symptom|sign|identify|how.*know|அறிகுறி|लक्षण|ലക്ഷണം|ಲಕ್ಷಣ',
       caseSensitive: false,
     ).hasMatch(value);
-    final refersToLeaf = prevention || treatment || symptoms || RegExp(
-      r'\b(this|that|it|leaf|plant|disease|result|adha|adhu|andha|intha|indha|idhoda|adhoda)\b',
-      caseSensitive: false,
-    ).hasMatch(value);
+    final refersToLeaf =
+        prevention ||
+        treatment ||
+        symptoms ||
+        RegExp(
+          r'\b(this|that|it|leaf|plant|disease|result|adha|adhu|andha|intha|indha|idhoda|adhoda)\b',
+          caseSensitive: false,
+        ).hasMatch(value);
 
     if (!refersToLeaf) return null;
 
@@ -528,7 +705,8 @@ class CygnusController extends ChangeNotifier {
     );
     final confidence = (result['confidence'] as num?)?.toDouble();
 
-    String bullets(Iterable<String> items) => items.map((e) => '• $e').join('\n');
+    String bullets(Iterable<String> items) =>
+        items.map((e) => '• $e').join('\n');
     final heading = '${advice.crop} · ${advice.condition}';
     final confidenceLine = confidence == null
         ? ''
@@ -634,7 +812,8 @@ class CygnusController extends ChangeNotifier {
       // The raw image and diagnosis stay on-device. Follow-up questions use
       // get_last_leaf_result, so no raw leaf image is uploaded to Cygnus.
     } catch (error) {
-      _error = 'I couldn’t analyze that leaf. Try a clear photo with one leaf centered.';
+      _error =
+          'I couldn’t analyze that leaf. Try a clear photo with one leaf centered.';
       await _append(_assistantMessage(_error!));
     } finally {
       _busy = false;
@@ -799,6 +978,7 @@ class CygnusController extends ChangeNotifier {
       if (result['ok'] == true) {
         _pendingAction = null;
         await _append(_assistantMessage(message));
+        await _completeActiveInstruction();
       } else {
         await _offerActionRetry(action, message);
       }
@@ -817,10 +997,18 @@ class CygnusController extends ChangeNotifier {
 
   Future<void> cancelPendingAction() async {
     if (_pendingAction == null || _busy) return;
-    _pendingAction = null;
-    await _append(_assistantMessage('Cancelled.'));
+    try {
+      await _completeActiveInstruction();
+      _pendingAction = null;
+      await _append(_assistantMessage('Cancelled.'));
+    } catch (error, stack) {
+      debugPrint('Could not advance the instruction queue: $error\n$stack');
+      _error =
+          'Could not update the saved queue. The schedule was not confirmed; try again.';
+      await _append(_assistantMessage(_error!));
+    }
     notifyListeners();
-    await _drainInstructionQueue();
+    if (_pendingAction == null) await _drainInstructionQueue();
   }
 
   Future<void> retryFailedInstruction() async {
@@ -834,10 +1022,23 @@ class CygnusController extends ChangeNotifier {
     _busy = true;
     _activeInstructionHadSideEffect = false;
     _activeToolFailure = null;
-    await _resolveRetryMessage(retry.id, 'Retry approved.');
-    notifyListeners();
+    final active = _instructionQueue.isEmpty
+        ? retry.instruction
+        : _instructionQueue.first;
 
     try {
+      if (active != null) {
+        _activeInstruction = active.copyWith(
+          started: true,
+          retryCount: active.retryCount + 1,
+        );
+        if (_instructionQueue.isNotEmpty) {
+          _instructionQueue[0] = _activeInstruction!;
+          await _persistInstructionQueue();
+        }
+      }
+      await _resolveRetryMessage(retry.id, 'Retry approved.');
+      notifyListeners();
       final action = retry.action;
       if (action != null) {
         final result = await _executePending(action);
@@ -845,22 +1046,26 @@ class CygnusController extends ChangeNotifier {
         if (result['ok'] == true) {
           _pendingAction = null;
           await _append(_assistantMessage(message));
+          await _completeActiveInstruction();
         } else {
           await _offerActionRetry(
             action,
             message,
-            retryCount: retry.retryCount + 1,
+            retryCount: _activeInstruction?.retryCount ?? retry.retryCount + 1,
           );
         }
       } else {
-        final instruction = retry.instruction!;
-        await _append(_userMessage(instruction.text));
+        final instruction = active ?? retry.instruction!;
         await _processInstruction(
           instruction.text,
           fromVoice: instruction.fromVoice,
+          instructionId: instruction.id,
           appendUserMessage: false,
-          retryCount: retry.retryCount + 1,
+          retryCount: instruction.retryCount,
         );
+        if (_pendingAction == null && _pendingRetry == null) {
+          await _completeActiveInstruction();
+        }
       }
     } catch (error, stack) {
       debugPrint('Cygnus retry failed: $error\n$stack');
@@ -870,13 +1075,13 @@ class CygnusController extends ChangeNotifier {
         await _offerActionRetry(
           action,
           message,
-          retryCount: retry.retryCount + 1,
+          retryCount: _activeInstruction?.retryCount ?? retry.retryCount + 1,
         );
       } else {
         await _offerInstructionRetry(
           retry.instruction!,
           message,
-          retryCount: retry.retryCount + 1,
+          retryCount: _activeInstruction?.retryCount ?? retry.retryCount + 1,
         );
       }
     } finally {
@@ -896,18 +1101,29 @@ class CygnusController extends ChangeNotifier {
       _deferredDecision = 'dismiss';
       return;
     }
-    _pendingRetry = null;
-    if (retry.action != null) _pendingAction = null;
-    await _resolveRetryMessage(retry.id, 'Okay, leaving this instruction here.');
-    if (retry.action != null) {
-      await _append(_assistantMessage('Schedule action cancelled.'));
+    try {
+      await _skipActiveInstruction();
+      _pendingRetry = null;
+      if (retry.action != null) _pendingAction = null;
+      await _resolveRetryMessage(
+        retry.id,
+        'Skipped; continuing with the next queued instruction.',
+      );
+      if (retry.action != null) {
+        await _append(_assistantMessage('Schedule action cancelled.'));
+      }
+    } catch (error, stack) {
+      debugPrint('Could not skip queued instruction: $error\n$stack');
+      _error =
+          'Could not save the queue update. This instruction is still waiting.';
+      await _append(_assistantMessage(_error!));
     }
     notifyListeners();
-    await _drainInstructionQueue();
+    if (_pendingRetry == null) await _drainInstructionQueue();
   }
 
   Future<void> _offerInstructionRetry(
-    _QueuedCygnusInstruction instruction,
+    CygnusQueuedInstruction instruction,
     String error, {
     int retryCount = 0,
   }) async {
@@ -924,6 +1140,7 @@ class CygnusController extends ChangeNotifier {
     int retryCount = 0,
   }) async {
     await _offerRetry(
+      instruction: _activeInstruction,
       action: action,
       error: error,
       retryCount: retryCount,
@@ -931,20 +1148,27 @@ class CygnusController extends ChangeNotifier {
   }
 
   Future<void> _offerRetry({
-    _QueuedCygnusInstruction? instruction,
+    CygnusQueuedInstruction? instruction,
     PendingCygnusAction? action,
     required String error,
     int retryCount = 0,
   }) async {
     final id = _id('retry');
+    final retryInstruction = instruction ?? _activeInstruction;
+    final safeRetryCount = max(retryCount, retryInstruction?.retryCount ?? 0);
     _pendingRetry = _PendingCygnusRetry(
       id: id,
-      instruction: instruction,
+      instruction: retryInstruction,
       action: action,
-      retryCount: retryCount,
+      retryCount: safeRetryCount,
     );
-    final target = action?.title ?? instruction?.text ?? 'the last instruction';
-    final retryError = _activeInstructionHadSideEffect &&
+    final target =
+        action?.title ??
+        instruction?.text ??
+        _activeInstruction?.text ??
+        'the last instruction';
+    final retryError =
+        _activeInstructionHadSideEffect &&
             !error.contains('check its state before retrying')
         ? '$error The action may have reached the device already; check its state before retrying.'
         : error;
@@ -957,7 +1181,7 @@ class CygnusController extends ChangeNotifier {
         payload: <String, dynamic>{
           'retryId': id,
           'instruction': target,
-          'retryCount': retryCount,
+          'retryCount': safeRetryCount,
         },
         createdAt: DateTime.now(),
       ),
@@ -966,8 +1190,7 @@ class CygnusController extends ChangeNotifier {
 
   Future<void> _resolveRetryMessage(String id, String status) async {
     final index = _messages.indexWhere(
-      (message) =>
-          message.kind == 'retry' && message.payload['retryId'] == id,
+      (message) => message.kind == 'retry' && message.payload['retryId'] == id,
     );
     if (index < 0) return;
     final previous = _messages[index];
@@ -1080,22 +1303,22 @@ You may navigate the app using open_page when the user asks to open a page.
     }
 
     Map<String, dynamic> str(String description) => <String, dynamic>{
-          'type': 'string',
-          'description': description,
-        };
+      'type': 'string',
+      'description': description,
+    };
     Map<String, dynamic> integer(String description) => <String, dynamic>{
-          'type': 'integer',
-          'description': description,
-        };
+      'type': 'integer',
+      'description': description,
+    };
     Map<String, dynamic> boolean(String description) => <String, dynamic>{
-          'type': 'boolean',
-          'description': description,
-        };
+      'type': 'boolean',
+      'description': description,
+    };
     Map<String, dynamic> intArray(String description) => <String, dynamic>{
-          'type': 'array',
-          'description': description,
-          'items': const <String, dynamic>{'type': 'integer'},
-        };
+      'type': 'array',
+      'description': description,
+      'items': const <String, dynamic>{'type': 'integer'},
+    };
 
     return <Map<String, dynamic>>[
       fn(
@@ -1130,9 +1353,7 @@ You may navigate the app using open_page when the user asks to open a page.
       fn(
         'set_all_motors',
         'Turn all three motors on or off now.',
-        properties: <String, dynamic>{
-          'state': boolean('true=ON, false=OFF'),
-        },
+        properties: <String, dynamic>{'state': boolean('true=ON, false=OFF')},
         required: const <String>['state'],
       ),
       fn(
@@ -1141,14 +1362,21 @@ You may navigate the app using open_page when the user asks to open a page.
         properties: <String, dynamic>{
           'operations': <String, dynamic>{
             'type': 'array',
-            'description': 'Every requested motor action. Include all requested motors before calling.',
+            'description':
+                'Every requested motor action. Include all requested motors before calling.',
             'minItems': 1,
             'maxItems': 3,
             'items': <String, dynamic>{
               'type': 'object',
               'properties': <String, dynamic>{
-                'motor': <String, dynamic>{'type': 'integer', 'description': 'Motor 1, 2 or 3.'},
-                'state': <String, dynamic>{'type': 'boolean', 'description': 'true=ON, false=OFF'},
+                'motor': <String, dynamic>{
+                  'type': 'integer',
+                  'description': 'Motor 1, 2 or 3.',
+                },
+                'state': <String, dynamic>{
+                  'type': 'boolean',
+                  'description': 'true=ON, false=OFF',
+                },
               },
               'required': <String>['motor', 'state'],
               'additionalProperties': false,
@@ -1166,18 +1394,26 @@ You may navigate the app using open_page when the user asks to open a page.
       ),
       fn(
         'prepare_schedule',
-        'Prepare a motor schedule for user confirmation. Date YYYY-MM-DD, time HH:mm:ss in Asia/Kolkata.',
+        'Prepare one motor schedule for user confirmation. If another schedule is awaiting confirmation, do not replace it. Date YYYY-MM-DD, time HH:mm:ss in Asia/Kolkata.',
         properties: <String, dynamic>{
           'motor': integer('Motor number 1, 2 or 3.'),
           'date': str('Start date in YYYY-MM-DD.'),
           'time': str('Start time in 24-hour HH:mm:ss.'),
           'durationSec': integer('Run duration in seconds.'),
           'repeat': str('once, daily, or weekly'),
-          'weekdays': intArray('For weekly repeat only. Sunday=0 through Saturday=6.'),
+          'weekdays': intArray(
+            'For weekly repeat only. Sunday=0 through Saturday=6.',
+          ),
           'endDate': str('Optional recurrence end date YYYY-MM-DD.'),
           'title': str('Short user-friendly plan title.'),
         },
-        required: const <String>['motor', 'date', 'time', 'durationSec', 'repeat'],
+        required: const <String>[
+          'motor',
+          'date',
+          'time',
+          'durationSec',
+          'repeat',
+        ],
       ),
       fn(
         'prepare_update_schedule',
@@ -1190,8 +1426,12 @@ You may navigate the app using open_page when the user asks to open a page.
           'time': str('Optional new start time HH:mm:ss.'),
           'durationSec': integer('Optional new run duration in seconds.'),
           'repeat': str('Optional repeat: once, daily, or weekly.'),
-          'weekdays': intArray('Optional weekdays for weekly repeat. Sunday=0 through Saturday=6.'),
-          'endDate': str('Optional recurrence end date YYYY-MM-DD. Empty string clears it.'),
+          'weekdays': intArray(
+            'Optional weekdays for weekly repeat. Sunday=0 through Saturday=6.',
+          ),
+          'endDate': str(
+            'Optional recurrence end date YYYY-MM-DD. Empty string clears it.',
+          ),
           'enabled': boolean('Optional enabled state.'),
         },
         required: const <String>['scheduleId'],
@@ -1208,9 +1448,7 @@ You may navigate the app using open_page when the user asks to open a page.
       fn(
         'prepare_delete_schedule',
         'Prepare deletion of an existing schedule and ask for confirmation.',
-        properties: <String, dynamic>{
-          'scheduleId': str('Schedule ID.'),
-        },
+        properties: <String, dynamic>{'scheduleId': str('Schedule ID.')},
         required: const <String>['scheduleId'],
       ),
       fn(
@@ -1221,7 +1459,9 @@ You may navigate the app using open_page when the user asks to open a page.
         'open_page',
         'Open an AGRO CONNECT page.',
         properties: <String, dynamic>{
-          'page': str('home, motors, plans, monitor, history, plant_health, cygnus, or settings'),
+          'page': str(
+            'home, motors, plans, monitor, history, plant_health, cygnus, or settings',
+          ),
         },
         required: const <String>['page'],
       ),
@@ -1267,24 +1507,35 @@ You may navigate the app using open_page when the user asks to open a page.
       case 'prepare_update_schedule':
         return _prepareUpdateSchedule(args);
       case 'set_schedule_enabled':
-        return _setScheduleEnabled(args['scheduleId']?.toString() ?? '', args['enabled'] == true);
+        return _setScheduleEnabled(
+          args['scheduleId']?.toString() ?? '',
+          args['enabled'] == true,
+        );
       case 'prepare_delete_schedule':
         return _prepareDeleteSchedule(args['scheduleId']?.toString() ?? '');
       case 'get_last_leaf_result':
         return _lastLeafResult == null
-            ? <String, Object?>{'ok': false, 'message': 'No leaf has been scanned in this chat yet.'}
+            ? <String, Object?>{
+                'ok': false,
+                'message': 'No leaf has been scanned in this chat yet.',
+              }
             : <String, Object?>{'ok': true, ..._jsonSafeMap(_lastLeafResult!)};
       case 'open_page':
         final page = args['page']?.toString() ?? 'home';
         navigationHandler?.call(page);
         return <String, Object?>{'ok': true, 'page': page};
       default:
-        return <String, Object?>{'ok': false, 'message': 'Unsupported action: $name'};
+        return <String, Object?>{
+          'ok': false,
+          'message': 'Unsupported action: $name',
+        };
     }
   }
 
   Map<String, Object?> _currentContext() {
-    final nowIst = DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30));
+    final nowIst = DateTime.now().toUtc().add(
+      const Duration(hours: 5, minutes: 30),
+    );
     return <String, Object?>{
       'ok': true,
       'timezone': 'Asia/Kolkata',
@@ -1297,7 +1548,11 @@ You may navigate the app using open_page when the user asks to open a page.
 
   Map<String, Object?> _currentStatus({required bool live}) {
     final agro = _agro;
-    if (agro == null) return <String, Object?>{'ok': false, 'message': 'Farm controller is not ready.'};
+    if (agro == null)
+      return <String, Object?>{
+        'ok': false,
+        'message': 'Farm controller is not ready.',
+      };
     final t = agro.telemetry;
     final result = <String, Object?>{
       'ok': true,
@@ -1314,46 +1569,67 @@ You may navigate the app using open_page when the user asks to open a page.
     };
 
     if (live) {
-      unawaited(_append(CygnusMessage(
-        id: _id('msg'),
-        role: 'assistant',
-        text: 'Live farm status',
-        kind: 'live_status',
-        payload: const <String, dynamic>{'live': true},
-        createdAt: DateTime.now(),
-      )));
+      unawaited(
+        _append(
+          CygnusMessage(
+            id: _id('msg'),
+            role: 'assistant',
+            text: 'Live farm status',
+            kind: 'live_status',
+            payload: const <String, dynamic>{'live': true},
+            createdAt: DateTime.now(),
+          ),
+        ),
+      );
     }
     return result;
   }
 
   Map<String, Object?> _metricTrend(String rawMetric, int minutes) {
     final agro = _agro;
-    if (agro == null) return <String, Object?>{'ok': false, 'message': 'Farm controller is not ready.'};
+    if (agro == null)
+      return <String, Object?>{
+        'ok': false,
+        'message': 'Farm controller is not ready.',
+      };
     final metric = rawMetric.toLowerCase();
     final safeMinutes = minutes.clamp(1, 1440);
     final since = DateTime.now().subtract(Duration(minutes: safeMinutes));
-    final source = agro.history.where((e) => e.receivedAt.isAfter(since)).toList();
+    final source = agro.history
+        .where((e) => e.receivedAt.isAfter(since))
+        .toList();
     final sampled = _sampleTelemetry(source, 40);
-    final points = sampled.map((t) => <String, Object?>{
-          'time': t.receivedAt.millisecondsSinceEpoch,
-          'value': _metricValue(t, metric),
-        }).toList(growable: false);
+    final points = sampled
+        .map(
+          (t) => <String, Object?>{
+            'time': t.receivedAt.millisecondsSinceEpoch,
+            'value': _metricValue(t, metric),
+          },
+        )
+        .toList(growable: false);
 
-    unawaited(_append(CygnusMessage(
-      id: _id('msg'),
-      role: 'assistant',
-      text: '${_metricLabel(metric)} trend',
-      kind: 'trend',
-      payload: <String, dynamic>{
-        'metric': metric,
-        'minutes': safeMinutes,
-        'points': points,
-      },
-      createdAt: DateTime.now(),
-    )));
+    unawaited(
+      _append(
+        CygnusMessage(
+          id: _id('msg'),
+          role: 'assistant',
+          text: '${_metricLabel(metric)} trend',
+          kind: 'trend',
+          payload: <String, dynamic>{
+            'metric': metric,
+            'minutes': safeMinutes,
+            'points': points,
+          },
+          createdAt: DateTime.now(),
+        ),
+      ),
+    );
 
     if (points.isEmpty) {
-      return <String, Object?>{'ok': false, 'message': 'No recent history is available for that metric.'};
+      return <String, Object?>{
+        'ok': false,
+        'message': 'No recent history is available for that metric.',
+      };
     }
     final values = points.map((e) => (e['value'] as num).toDouble()).toList();
     final min = values.reduce((a, b) => a < b ? a : b);
@@ -1390,8 +1666,7 @@ You may navigate the app using open_page when the user asks to open a page.
     await agro.setMotor(motor, state);
     final confirmed = await _waitForMotor(motor, state);
     if (!confirmed) {
-      _activeToolFailure =
-          'Motor $motor did not confirm the requested state.';
+      _activeToolFailure = 'Motor $motor did not confirm the requested state.';
     }
     return <String, Object?>{
       'ok': confirmed,
@@ -1462,34 +1737,53 @@ You may navigate the app using open_page when the user asks to open a page.
       'ok': allOk,
       'results': results,
       'message': summary.isEmpty
-          ? (allOk ? 'Motor actions completed.' : 'Some motor actions were not confirmed.')
+          ? (allOk
+                ? 'Motor actions completed.'
+                : 'Some motor actions were not confirmed.')
           : summary,
     };
   }
 
   Map<String, Object?> _listSchedules(int? motor) {
     final plan = _plan;
-    if (plan == null) return <String, Object?>{'ok': false, 'message': 'Plans are not ready.'};
+    if (plan == null)
+      return <String, Object?>{'ok': false, 'message': 'Plans are not ready.'};
     final list = motor == null
         ? plan.plans
         : plan.plans.where((item) => item.motor == motor).toList();
-    final schedules = list.take(30).map((item) => <String, Object?>{
-          'id': item.id,
-          'title': item.title,
-          'motor': item.motor,
-          'date': item.date,
-          'time': item.time,
-          'durationSec': item.durationSec,
-          'repeat': item.repeat,
-          'weekdays': item.weekdays,
-          'endDate': item.endDate,
-          'enabled': item.enabled,
-          'nextRunAt': item.nextRunAt,
-        }).toList(growable: false);
-    return <String, Object?>{'ok': true, 'count': schedules.length, 'schedules': schedules};
+    final schedules = list
+        .take(30)
+        .map(
+          (item) => <String, Object?>{
+            'id': item.id,
+            'title': item.title,
+            'motor': item.motor,
+            'date': item.date,
+            'time': item.time,
+            'durationSec': item.durationSec,
+            'repeat': item.repeat,
+            'weekdays': item.weekdays,
+            'endDate': item.endDate,
+            'enabled': item.enabled,
+            'nextRunAt': item.nextRunAt,
+          },
+        )
+        .toList(growable: false);
+    return <String, Object?>{
+      'ok': true,
+      'count': schedules.length,
+      'schedules': schedules,
+    };
   }
 
   Map<String, Object?> _prepareSchedule(Map<String, Object?> args) {
+    if (_pendingAction != null) {
+      return <String, Object?>{
+        'ok': false,
+        'message':
+            'Another schedule action is awaiting confirmation. Finish it before preparing another.',
+      };
+    }
     final motor = _asInt(args['motor']) ?? 0;
     final date = args['date']?.toString() ?? '';
     final time = SchedulePlan.normalizeTime(args['time']?.toString() ?? '');
@@ -1497,10 +1791,10 @@ You may navigate the app using open_page when the user asks to open a page.
     final repeat = args['repeat']?.toString().toLowerCase() ?? 'once';
     final weekdays = (args['weekdays'] is List)
         ? (args['weekdays'] as List)
-            .map(_asInt)
-            .whereType<int>()
-            .where((e) => e >= 0 && e <= 6)
-            .toList(growable: false)
+              .map(_asInt)
+              .whereType<int>()
+              .where((e) => e >= 0 && e <= 6)
+              .toList(growable: false)
         : <int>[];
     final endDate = args['endDate']?.toString();
     final title = args['title']?.toString().trim();
@@ -1522,7 +1816,8 @@ You may navigate the app using open_page when the user asks to open a page.
       id: _id('pending'),
       type: 'create_schedule',
       title: title?.isNotEmpty == true ? title! : 'Motor $motor plan',
-      details: 'Motor $motor · ${SchedulePlan.to12Hour(time)} · ${_durationLabel(duration)} · ${_repeatLabel(repeat, weekdays)}',
+      details:
+          'Motor $motor · ${SchedulePlan.to12Hour(time)} · ${_durationLabel(duration)} · ${_repeatLabel(repeat, weekdays)}',
       arguments: <String, dynamic>{
         'title': title?.isNotEmpty == true ? title : 'Motor $motor plan',
         'motor': motor,
@@ -1535,18 +1830,22 @@ You may navigate the app using open_page when the user asks to open a page.
       },
     );
     _pendingAction = action;
-    unawaited(_append(CygnusMessage(
-      id: _id('msg'),
-      role: 'assistant',
-      text: 'Ready to create this plan.',
-      kind: 'confirmation',
-      payload: <String, dynamic>{
-        'pendingId': action.id,
-        'title': action.title,
-        'details': action.details,
-      },
-      createdAt: DateTime.now(),
-    )));
+    unawaited(
+      _append(
+        CygnusMessage(
+          id: _id('msg'),
+          role: 'assistant',
+          text: 'Ready to create this plan.',
+          kind: 'confirmation',
+          payload: <String, dynamic>{
+            'pendingId': action.id,
+            'title': action.title,
+            'details': action.details,
+          },
+          createdAt: DateTime.now(),
+        ),
+      ),
+    );
     notifyListeners();
     return <String, Object?>{
       'ok': true,
@@ -1562,6 +1861,13 @@ You may navigate the app using open_page when the user asks to open a page.
     if (plan == null) {
       return <String, Object?>{'ok': false, 'message': 'Plans are not ready.'};
     }
+    if (_pendingAction != null) {
+      return <String, Object?>{
+        'ok': false,
+        'message':
+            'Another schedule action is awaiting confirmation. Finish it before preparing another.',
+      };
+    }
     final scheduleId = args['scheduleId']?.toString() ?? '';
     final matches = plan.plans.where((item) => item.id == scheduleId);
     if (matches.isEmpty) {
@@ -1569,7 +1875,9 @@ You may navigate the app using open_page when the user asks to open a page.
     }
     final current = matches.first;
     final motor = _asInt(args['motor']) ?? current.motor;
-    final date = args.containsKey('date') ? args['date']?.toString() ?? '' : current.date;
+    final date = args.containsKey('date')
+        ? args['date']?.toString() ?? ''
+        : current.date;
     final time = args.containsKey('time')
         ? SchedulePlan.normalizeTime(args['time']?.toString() ?? '')
         : current.time;
@@ -1579,20 +1887,22 @@ You may navigate the app using open_page when the user asks to open a page.
         : current.repeat;
     final weekdays = args['weekdays'] is List
         ? (args['weekdays'] as List)
-            .map(_asInt)
-            .whereType<int>()
-            .where((e) => e >= 0 && e <= 6)
-            .toList(growable: false)
+              .map(_asInt)
+              .whereType<int>()
+              .where((e) => e >= 0 && e <= 6)
+              .toList(growable: false)
         : current.weekdays;
     final endDate = args.containsKey('endDate')
         ? (args['endDate']?.toString().trim().isNotEmpty == true
-            ? args['endDate'].toString().trim()
-            : null)
+              ? args['endDate'].toString().trim()
+              : null)
         : current.endDate;
     final title = args['title']?.toString().trim().isNotEmpty == true
         ? args['title'].toString().trim()
         : current.title;
-    final enabled = args.containsKey('enabled') ? args['enabled'] == true : current.enabled;
+    final enabled = args.containsKey('enabled')
+        ? args['enabled'] == true
+        : current.enabled;
 
     final validation = _validateSchedule(
       motor: motor,
@@ -1611,7 +1921,8 @@ You may navigate the app using open_page when the user asks to open a page.
       id: _id('pending'),
       type: 'update_schedule',
       title: 'Update $title',
-      details: 'Motor $motor · ${SchedulePlan.to12Hour(time)} · ${_durationLabel(duration)} · ${_repeatLabel(repeat, weekdays)}',
+      details:
+          'Motor $motor · ${SchedulePlan.to12Hour(time)} · ${_durationLabel(duration)} · ${_repeatLabel(repeat, weekdays)}',
       arguments: <String, dynamic>{
         'scheduleId': current.id,
         'title': title,
@@ -1626,55 +1937,74 @@ You may navigate the app using open_page when the user asks to open a page.
       },
     );
     _pendingAction = action;
-    unawaited(_append(CygnusMessage(
-      id: _id('msg'),
-      role: 'assistant',
-      text: 'Ready to update this plan.',
-      kind: 'confirmation',
-      payload: <String, dynamic>{
-        'pendingId': action.id,
-        'title': action.title,
-        'details': action.details,
-      },
-      createdAt: DateTime.now(),
-    )));
+    unawaited(
+      _append(
+        CygnusMessage(
+          id: _id('msg'),
+          role: 'assistant',
+          text: 'Ready to update this plan.',
+          kind: 'confirmation',
+          payload: <String, dynamic>{
+            'pendingId': action.id,
+            'title': action.title,
+            'details': action.details,
+          },
+          createdAt: DateTime.now(),
+        ),
+      ),
+    );
     notifyListeners();
     return <String, Object?>{
       'ok': true,
       'requiresConfirmation': true,
       'pendingId': action.id,
       'summary': action.details,
-      'message': 'The schedule update is prepared and waiting for user confirmation.',
+      'message':
+          'The schedule update is prepared and waiting for user confirmation.',
     };
   }
 
   Map<String, Object?> _prepareDeleteSchedule(String scheduleId) {
     final plan = _plan;
-    if (plan == null) return <String, Object?>{'ok': false, 'message': 'Plans are not ready.'};
+    if (plan == null)
+      return <String, Object?>{'ok': false, 'message': 'Plans are not ready.'};
+    if (_pendingAction != null) {
+      return <String, Object?>{
+        'ok': false,
+        'message':
+            'Another schedule action is awaiting confirmation. Finish it before preparing another.',
+      };
+    }
     final matches = plan.plans.where((item) => item.id == scheduleId);
-    if (matches.isEmpty) return <String, Object?>{'ok': false, 'message': 'Schedule not found.'};
+    if (matches.isEmpty)
+      return <String, Object?>{'ok': false, 'message': 'Schedule not found.'};
     final item = matches.first;
     final action = PendingCygnusAction(
       id: _id('pending'),
       type: 'delete_schedule',
       title: 'Delete ${item.title}',
-      details: 'Motor ${item.motor} · ${item.displayTime} · ${item.repeatLabel}',
+      details:
+          'Motor ${item.motor} · ${item.displayTime} · ${item.repeatLabel}',
       arguments: <String, dynamic>{'scheduleId': item.id},
     );
     _pendingAction = action;
-    unawaited(_append(CygnusMessage(
-      id: _id('msg'),
-      role: 'assistant',
-      text: 'Confirm schedule deletion.',
-      kind: 'confirmation',
-      payload: <String, dynamic>{
-        'pendingId': action.id,
-        'title': action.title,
-        'details': action.details,
-        'destructive': true,
-      },
-      createdAt: DateTime.now(),
-    )));
+    unawaited(
+      _append(
+        CygnusMessage(
+          id: _id('msg'),
+          role: 'assistant',
+          text: 'Confirm schedule deletion.',
+          kind: 'confirmation',
+          payload: <String, dynamic>{
+            'pendingId': action.id,
+            'title': action.title,
+            'details': action.details,
+            'destructive': true,
+          },
+          createdAt: DateTime.now(),
+        ),
+      ),
+    );
     notifyListeners();
     return <String, Object?>{
       'ok': true,
@@ -1683,11 +2013,16 @@ You may navigate the app using open_page when the user asks to open a page.
     };
   }
 
-  Future<Map<String, Object?>> _setScheduleEnabled(String id, bool enabled) async {
+  Future<Map<String, Object?>> _setScheduleEnabled(
+    String id,
+    bool enabled,
+  ) async {
     final plan = _plan;
-    if (plan == null) return <String, Object?>{'ok': false, 'message': 'Plans are not ready.'};
+    if (plan == null)
+      return <String, Object?>{'ok': false, 'message': 'Plans are not ready.'};
     final matches = plan.plans.where((item) => item.id == id);
-    if (matches.isEmpty) return <String, Object?>{'ok': false, 'message': 'Schedule not found.'};
+    if (matches.isEmpty)
+      return <String, Object?>{'ok': false, 'message': 'Schedule not found.'};
     _activeInstructionHadSideEffect = true;
     final ok = await plan.setEnabled(matches.first, enabled);
     return <String, Object?>{
@@ -1699,9 +2034,12 @@ You may navigate the app using open_page when the user asks to open a page.
     };
   }
 
-  Future<Map<String, Object?>> _executePending(PendingCygnusAction action) async {
+  Future<Map<String, Object?>> _executePending(
+    PendingCygnusAction action,
+  ) async {
     final plan = _plan;
-    if (plan == null) return <String, Object?>{'ok': false, 'message': 'Plans are not ready.'};
+    if (plan == null)
+      return <String, Object?>{'ok': false, 'message': 'Plans are not ready.'};
 
     if (action.type == 'create_schedule') {
       _activeInstructionHadSideEffect = true;
@@ -1713,8 +2051,12 @@ You may navigate the app using open_page when the user asks to open a page.
         time: a['time']?.toString() ?? '00:00:00',
         durationSec: _asInt(a['durationSec']) ?? 30,
         repeat: a['repeat']?.toString() ?? 'once',
-        weekdays: (a['weekdays'] as List?)?.map(_asInt).whereType<int>().toList() ?? const <int>[],
-        endDate: a['endDate']?.toString().isNotEmpty == true ? a['endDate'].toString() : null,
+        weekdays:
+            (a['weekdays'] as List?)?.map(_asInt).whereType<int>().toList() ??
+            const <int>[],
+        endDate: a['endDate']?.toString().isNotEmpty == true
+            ? a['endDate'].toString()
+            : null,
         enabled: true,
       );
       final ok = await plan.create(draft);
@@ -1737,8 +2079,12 @@ You may navigate the app using open_page when the user asks to open a page.
         time: a['time']?.toString() ?? '00:00:00',
         durationSec: _asInt(a['durationSec']) ?? 30,
         repeat: a['repeat']?.toString() ?? 'once',
-        weekdays: (a['weekdays'] as List?)?.map(_asInt).whereType<int>().toList() ?? const <int>[],
-        endDate: a['endDate']?.toString().isNotEmpty == true ? a['endDate'].toString() : null,
+        weekdays:
+            (a['weekdays'] as List?)?.map(_asInt).whereType<int>().toList() ??
+            const <int>[],
+        endDate: a['endDate']?.toString().isNotEmpty == true
+            ? a['endDate'].toString()
+            : null,
         enabled: a['enabled'] != false,
       );
       final ok = await plan.update(id, draft);
@@ -1756,11 +2102,16 @@ You may navigate the app using open_page when the user asks to open a page.
       final ok = await plan.delete(id);
       return <String, Object?>{
         'ok': ok,
-        'message': ok ? 'Schedule deleted.' : (plan.error ?? 'Could not delete the schedule.'),
+        'message': ok
+            ? 'Schedule deleted.'
+            : (plan.error ?? 'Could not delete the schedule.'),
       };
     }
 
-    return <String, Object?>{'ok': false, 'message': 'Unsupported pending action.'};
+    return <String, Object?>{
+      'ok': false,
+      'message': 'Unsupported pending action.',
+    };
   }
 
   String _modelFor(String text) {
@@ -1776,15 +2127,19 @@ You may navigate the app using open_page when the user asks to open a page.
 
   String _reasoningEffortFor(String text) {
     final normalized = text.toLowerCase();
-    if (RegExp(r'(schedule|plan|update|delete|weekly|daily|tomorrow|after|later|trend|compare|why|explain)')
-        .hasMatch(normalized)) {
+    if (RegExp(
+      r'(schedule|plan|update|delete|weekly|daily|tomorrow|after|later|trend|compare|why|explain)',
+    ).hasMatch(normalized)) {
       return 'medium';
     }
     return 'low';
   }
 
   Future<String?> _tryFastMotorCommand(String text) async {
-    final normalized = text.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+    final normalized = text
+        .toLowerCase()
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
 
     // Any timing/recurrence cue makes this a plan request rather than an
     // immediate control request.
@@ -1794,8 +2149,12 @@ You may navigate the app using open_page when the user asks to open a page.
     if (planCue.hasMatch(normalized)) return null;
 
     final actions = <({int index, bool state})>[];
-    final offPattern = RegExp(r'\b(off|stop|stopp|stoppa|niruth|niruthu|band|close)\b|நிறுத்து|बंद');
-    final onPattern = RegExp(r'\b(on|start|startu|starta|run|open|chalu)\b|தொடங்கு|चालू');
+    final offPattern = RegExp(
+      r'\b(off|stop|stopp|stoppa|niruth|niruthu|band|close)\b|நிறுத்து|बंद',
+    );
+    final onPattern = RegExp(
+      r'\b(on|start|startu|starta|run|open|chalu)\b|தொடங்கு|चालू',
+    );
     for (final match in offPattern.allMatches(normalized)) {
       actions.add((index: match.start, state: false));
     }
@@ -1809,8 +2168,11 @@ You may navigate the app using open_page when the user asks to open a page.
     // every requested action is interpreted together and verified as a batch.
     if (actions.map((item) => item.state).toSet().length > 1) return null;
 
-    final allMotors = RegExp(r'\b(all|ella|ellaa|எல்லா|sabhi)\b').hasMatch(normalized) &&
-        RegExp(r'\b(motor|motro|moter|motar|motu|moto|motoru)s?\b').hasMatch(normalized);
+    final allMotors =
+        RegExp(r'\b(all|ella|ellaa|எல்லா|sabhi)\b').hasMatch(normalized) &&
+        RegExp(
+          r'\b(motor|motro|moter|motar|motu|moto|motoru)s?\b',
+        ).hasMatch(normalized);
     if (allMotors && actions.length == 1) {
       final result = await _setAllMotors(actions.first.state);
       return result['message']?.toString();
@@ -1866,8 +2228,14 @@ You may navigate the app using open_page when the user asks to open a page.
     }
 
     // Friendly visual aliases already shown in the app/prototype.
-    for (final alias in <String, int>{'green': 1, 'orange': 2, 'red': 3}.entries) {
-      for (final match in RegExp(r'\b' + alias.key + r'\b').allMatches(normalized)) {
+    for (final alias in <String, int>{
+      'green': 1,
+      'orange': 2,
+      'red': 3,
+    }.entries) {
+      for (final match in RegExp(
+        r'\b' + alias.key + r'\b',
+      ).allMatches(normalized)) {
         mentions.add((index: match.start, motor: alias.value));
       }
     }
@@ -1918,11 +2286,11 @@ You may navigate the app using open_page when the user asks to open a page.
     final agro = _agro;
     if (agro == null) return false;
     bool actual() => switch (motor) {
-          1 => agro.controls.actual2,
-          2 => agro.controls.actual3,
-          3 => agro.controls.actual4,
-          _ => false,
-        };
+      1 => agro.controls.actual2,
+      2 => agro.controls.actual3,
+      3 => agro.controls.actual4,
+      _ => false,
+    };
 
     final deadline = DateTime.now().add(const Duration(seconds: 5));
     while (DateTime.now().isBefore(deadline)) {
@@ -1942,12 +2310,19 @@ You may navigate the app using open_page when the user asks to open a page.
     String? endDate,
   }) {
     if (motor < 1 || motor > 3) return 'Choose Motor 1, 2 or 3.';
-    if (!RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(date)) return 'Date must be YYYY-MM-DD.';
-    if (!RegExp(r'^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$').hasMatch(time)) return 'Time must be HH:mm:ss.';
-    if (durationSec < 1 || durationSec > 86400) return 'Duration must be between 1 second and 24 hours.';
-    if (!const {'once', 'daily', 'weekly'}.contains(repeat)) return 'Repeat must be once, daily or weekly.';
-    if (repeat == 'weekly' && weekdays.isEmpty) return 'Choose at least one weekday.';
-    if (endDate != null && endDate.isNotEmpty && !RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(endDate)) {
+    if (!RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(date))
+      return 'Date must be YYYY-MM-DD.';
+    if (!RegExp(r'^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$').hasMatch(time))
+      return 'Time must be HH:mm:ss.';
+    if (durationSec < 1 || durationSec > 86400)
+      return 'Duration must be between 1 second and 24 hours.';
+    if (!const {'once', 'daily', 'weekly'}.contains(repeat))
+      return 'Repeat must be once, daily or weekly.';
+    if (repeat == 'weekly' && weekdays.isEmpty)
+      return 'Choose at least one weekday.';
+    if (endDate != null &&
+        endDate.isNotEmpty &&
+        !RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(endDate)) {
       return 'End date must be YYYY-MM-DD.';
     }
     return null;
@@ -1962,12 +2337,14 @@ You may navigate the app using open_page when the user asks to open a page.
 
     final messageId = _id('msg');
     final createdAt = DateTime.now();
-    _messages.add(CygnusMessage(
-      id: messageId,
-      role: 'assistant',
-      text: '',
-      createdAt: createdAt,
-    ));
+    _messages.add(
+      CygnusMessage(
+        id: messageId,
+        role: 'assistant',
+        text: '',
+        createdAt: createdAt,
+      ),
+    );
     notifyListeners();
 
     final chunks = RegExp(r'\S+\s*')
@@ -2019,19 +2396,23 @@ You may navigate the app using open_page when the user asks to open a page.
     notifyListeners();
   }
 
-  CygnusMessage _userMessage(String text) => CygnusMessage(
+  CygnusMessage _userMessage(String text, {String? instructionId}) =>
+      CygnusMessage(
         id: _id('msg'),
         role: 'user',
         text: text,
+        payload: <String, dynamic>{
+          if (instructionId != null) 'instructionId': instructionId,
+        },
         createdAt: DateTime.now(),
       );
 
   CygnusMessage _assistantMessage(String text) => CygnusMessage(
-        id: _id('msg'),
-        role: 'assistant',
-        text: text,
-        createdAt: DateTime.now(),
-      );
+    id: _id('msg'),
+    role: 'assistant',
+    text: text,
+    createdAt: DateTime.now(),
+  );
 
   String _friendlyAiError(Object error) {
     if (error is GroqCygnusException) {
@@ -2074,7 +2455,9 @@ You may navigate the app using open_page when the user asks to open a page.
   double _metricValue(Telemetry t, String metric) {
     if (metric == 'humidity') return t.humidity;
     if (metric == 'soil') return t.soil;
-    if (metric == 'water' || metric == 'waterlevel' || metric == 'water_level') {
+    if (metric == 'water' ||
+        metric == 'waterlevel' ||
+        metric == 'water_level') {
       return t.waterLevel;
     }
     return t.temperature;
@@ -2083,7 +2466,9 @@ You may navigate the app using open_page when the user asks to open a page.
   String _metricLabel(String metric) {
     if (metric == 'humidity') return 'Humidity';
     if (metric == 'soil') return 'Soil moisture';
-    if (metric == 'water' || metric == 'waterlevel' || metric == 'water_level') {
+    if (metric == 'water' ||
+        metric == 'waterlevel' ||
+        metric == 'water_level') {
       return 'Water level';
     }
     return 'Temperature';
@@ -2099,15 +2484,30 @@ You may navigate the app using open_page when the user asks to open a page.
   String _repeatLabel(String repeat, List<int> weekdays) {
     if (repeat == 'daily') return 'Daily';
     if (repeat == 'weekly') {
-      const labels = <int, String>{0: 'Sun', 1: 'Mon', 2: 'Tue', 3: 'Wed', 4: 'Thu', 5: 'Fri', 6: 'Sat'};
-      return weekdays.map((e) => labels[e] ?? '').where((e) => e.isNotEmpty).join(', ');
+      const labels = <int, String>{
+        0: 'Sun',
+        1: 'Mon',
+        2: 'Tue',
+        3: 'Wed',
+        4: 'Thu',
+        5: 'Fri',
+        6: 'Sat',
+      };
+      return weekdays
+          .map((e) => labels[e] ?? '')
+          .where((e) => e.isNotEmpty)
+          .join(', ');
     }
     return 'Once';
   }
 
   Map<String, Object?> _jsonSafeMap(Map<String, dynamic> input) {
     return input.map((key, value) {
-      if (value is List) return MapEntry<String, Object?>(key, value.map((e) => e.toString()).toList());
+      if (value is List)
+        return MapEntry<String, Object?>(
+          key,
+          value.map((e) => e.toString()).toList(),
+        );
       if (value is num || value is bool || value is String || value == null) {
         return MapEntry<String, Object?>(key, value);
       }
@@ -2125,54 +2525,8 @@ You may navigate the app using open_page when the user asks to open a page.
     return '${two(value.hour)}:${two(value.minute)}:${two(value.second)}';
   }
 
-  bool _isApproval(String value) {
-    final normalized = value
-        .trim()
-        .toLowerCase()
-        .replaceAll(RegExp(r'[.!?,]'), '')
-        .replaceAll(RegExp(r'\s+'), ' ');
-    return const {
-      'yes',
-      'yes confirm',
-      'yes proceed',
-      'confirm',
-      'do it',
-      'proceed',
-      'go ahead',
-      'okay',
-      'ok',
-      'pannidu',
-      'pannu',
-      'ama',
-      'aama',
-      'seri',
-      'சரி',
-      'ஆம்',
-      'பண்ணிடு',
-    }.contains(normalized);
-  }
-
-  bool _isRejection(String value) {
-    final normalized = value
-        .trim()
-        .toLowerCase()
-        .replaceAll(RegExp(r'[.!?,]'), '')
-        .replaceAll(RegExp(r'\s+'), ' ');
-    return const {
-      'no',
-      'no cancel',
-      'cancel',
-      'stop',
-      'venam',
-      'vendam',
-      'illa',
-      'illai',
-      'வேண்டாம்',
-      'ரத்து',
-    }.contains(normalized);
-  }
-
-  String _id(String prefix) => '${prefix}_${DateTime.now().microsecondsSinceEpoch}_${Random.secure().nextInt(1 << 32).toRadixString(16)}';
+  String _id(String prefix) =>
+      '${prefix}_${DateTime.now().microsecondsSinceEpoch}_${Random.secure().nextInt(1 << 32).toRadixString(16)}';
 
   @override
   void dispose() {
@@ -2184,16 +2538,6 @@ You may navigate the app using open_page when the user asks to open a page.
   }
 }
 
-class _QueuedCygnusInstruction {
-  const _QueuedCygnusInstruction({
-    required this.text,
-    required this.fromVoice,
-  });
-
-  final String text;
-  final bool fromVoice;
-}
-
 class _PendingCygnusRetry {
   const _PendingCygnusRetry({
     required this.id,
@@ -2203,7 +2547,7 @@ class _PendingCygnusRetry {
   });
 
   final String id;
-  final _QueuedCygnusInstruction? instruction;
+  final CygnusQueuedInstruction? instruction;
   final PendingCygnusAction? action;
   final int retryCount;
 }

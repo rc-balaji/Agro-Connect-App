@@ -11,6 +11,7 @@ import 'cygnus_models.dart';
 class CygnusSessionStore {
   static const _localSessionsKey = 'cygnus_local_sessions_v1';
   static const _localMessagesPrefix = 'cygnus_local_messages_v1_';
+  static const _pendingInstructionsPrefix = 'cygnus_pending_instructions_v1_';
   static const _installIdKey = 'cygnus_install_id_v1';
 
   FirebaseDatabase? _database;
@@ -62,16 +63,21 @@ class CygnusSessionStore {
     final root = _root;
     if (root != null) {
       try {
-        final snapshot = await root.orderByChild('updatedAt').limitToLast(40).get();
+        final snapshot = await root
+            .orderByChild('updatedAt')
+            .limitToLast(40)
+            .get();
         final value = snapshot.value;
         if (value is Map) {
           final sessions = <CygnusSessionSummary>[];
           value.forEach((key, dynamic raw) {
             if (raw is Map) {
-              sessions.add(CygnusSessionSummary.fromMap(
-                key.toString(),
-                Map<String, dynamic>.from(raw),
-              ));
+              sessions.add(
+                CygnusSessionSummary.fromMap(
+                  key.toString(),
+                  Map<String, dynamic>.from(raw),
+                ),
+              );
             }
           });
           sessions.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
@@ -90,10 +96,12 @@ class CygnusSessionStore {
       if (decoded is! List) return const <CygnusSessionSummary>[];
       final sessions = decoded
           .whereType<Map>()
-          .map((item) => CygnusSessionSummary.fromMap(
-                item['id']?.toString() ?? '',
-                Map<String, dynamic>.from(item),
-              ))
+          .map(
+            (item) => CygnusSessionSummary.fromMap(
+              item['id']?.toString() ?? '',
+              Map<String, dynamic>.from(item),
+            ),
+          )
           .toList();
       sessions.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
       return sessions;
@@ -143,7 +151,9 @@ class CygnusSessionStore {
           final messages = <CygnusMessage>[];
           value.forEach((_, dynamic raw) {
             if (raw is Map) {
-              messages.add(CygnusMessage.fromMap(Map<String, dynamic>.from(raw)));
+              messages.add(
+                CygnusMessage.fromMap(Map<String, dynamic>.from(raw)),
+              );
             }
           });
           messages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
@@ -174,7 +184,10 @@ class CygnusSessionStore {
     final root = _root;
     if (root != null) {
       try {
-        final messageRef = root.child(sessionId).child('messages').child(message.id);
+        final messageRef = root
+            .child(sessionId)
+            .child('messages')
+            .child(message.id);
         await messageRef.set(message.toMap());
         await root.child(sessionId).update(<String, dynamic>{'updatedAt': now});
       } catch (error) {
@@ -205,11 +218,17 @@ class CygnusSessionStore {
     await prefs.setString(key, jsonEncode(messages));
 
     final sessions = await _readLocalSessionMaps();
-    final existing = sessions.indexWhere((e) => e['id']?.toString() == sessionId);
+    final existing = sessions.indexWhere(
+      (e) => e['id']?.toString() == sessionId,
+    );
     final record = <String, dynamic>{
       'id': sessionId,
-      'title': existing >= 0 ? sessions[existing]['title'] ?? 'New chat' : 'New chat',
-      'languageCode': existing >= 0 ? sessions[existing]['languageCode'] ?? 'en' : 'en',
+      'title': existing >= 0
+          ? sessions[existing]['title'] ?? 'New chat'
+          : 'New chat',
+      'languageCode': existing >= 0
+          ? sessions[existing]['languageCode'] ?? 'en'
+          : 'en',
       'updatedAt': now,
       'createdAt': existing >= 0 ? sessions[existing]['createdAt'] ?? now : now,
     };
@@ -219,6 +238,54 @@ class CygnusSessionStore {
       sessions.add(record);
     }
     await prefs.setString(_localSessionsKey, jsonEncode(sessions));
+  }
+
+  Future<List<CygnusQueuedInstruction>> loadInstructionQueue(
+    String sessionId,
+  ) async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString('$_pendingInstructionsPrefix$sessionId');
+    if (raw == null || raw.isEmpty) return const <CygnusQueuedInstruction>[];
+
+    final decoded = jsonDecode(raw);
+    if (decoded is! List) {
+      throw const FormatException(
+        'Stored Cygnus instruction queue is not a list.',
+      );
+    }
+    final instructions = <CygnusQueuedInstruction>[];
+    for (final item in decoded) {
+      if (item is! Map) {
+        throw const FormatException(
+          'Stored Cygnus instruction queue contains an invalid item.',
+        );
+      }
+      instructions.add(
+        CygnusQueuedInstruction.fromMap(Map<String, dynamic>.from(item)),
+      );
+    }
+    return instructions;
+  }
+
+  Future<void> saveInstructionQueue(
+    String sessionId,
+    List<CygnusQueuedInstruction> instructions,
+  ) async {
+    final prefs = await SharedPreferences.getInstance();
+    final key = '$_pendingInstructionsPrefix$sessionId';
+    if (instructions.isEmpty) {
+      await prefs.remove(key);
+      return;
+    }
+    final saved = await prefs.setString(
+      key,
+      jsonEncode(
+        instructions.map((instruction) => instruction.toMap()).toList(),
+      ),
+    );
+    if (!saved) {
+      throw StateError('Could not persist the Cygnus instruction queue.');
+    }
   }
 
   Future<void> updateSession({
@@ -266,9 +333,13 @@ class CygnusSessionStore {
     sessions.removeWhere((e) => e['id']?.toString() == sessionId);
     await prefs.setString(_localSessionsKey, jsonEncode(sessions));
     await prefs.remove('$_localMessagesPrefix$sessionId');
+    await prefs.remove('$_pendingInstructionsPrefix$sessionId');
   }
 
-  Future<void> _upsertLocalSession(String id, Map<String, dynamic> record) async {
+  Future<void> _upsertLocalSession(
+    String id,
+    Map<String, dynamic> record,
+  ) async {
     final prefs = await SharedPreferences.getInstance();
     final sessions = await _readLocalSessionMaps();
     final index = sessions.indexWhere((e) => e['id']?.toString() == id);
@@ -299,9 +370,10 @@ class CygnusSessionStore {
 
   String _randomId(String prefix) {
     final random = Random.secure();
-    final suffix = List<int>.generate(8, (_) => random.nextInt(16))
-        .map((e) => e.toRadixString(16))
-        .join();
+    final suffix = List<int>.generate(
+      8,
+      (_) => random.nextInt(16),
+    ).map((e) => e.toRadixString(16)).join();
     return '${prefix}_${DateTime.now().microsecondsSinceEpoch}_$suffix';
   }
 }
