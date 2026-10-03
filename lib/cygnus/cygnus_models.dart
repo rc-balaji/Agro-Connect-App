@@ -258,6 +258,75 @@ bool needsCygnusScheduleDateClarification(String input) {
   return !dateMentioned;
 }
 
+bool needsCygnusScheduleMeridiemClarification(String input) {
+  final value = input.toLowerCase();
+  final scheduleIntent =
+      RegExp(r'\b(schedule|scheduling|scheduled)\b').hasMatch(value) ||
+      (RegExp(r'\bplan\b').hasMatch(value) &&
+          RegExp(r'\bmotor\b').hasMatch(value)) ||
+      value.contains('அட்டவணை');
+  if (!scheduleIntent) return false;
+
+  final hasMeridiem =
+      RegExp(r'\b(?:a\.?m\.?|p\.?m\.?|noon|midnight)\b').hasMatch(value) ||
+      const [
+        'morning',
+        'afternoon',
+        'evening',
+        'night',
+        'காலை',
+        'மதியம்',
+        'மாலை',
+        'இரவு',
+        'kaalai',
+        'maalai',
+        'iravu',
+      ].any(value.contains);
+  if (hasMeridiem) return false;
+
+  final matches = RegExp(
+    r'\b(?:at|around|by)\s+(\d{1,2})(?::([0-5]\d))?\b|'
+    r'@\s*(\d{1,2})(?::([0-5]\d))?\b|'
+    r'\b(\d{1,2}):([0-5]\d)\b|'
+    r'\b(\d{1,2})\s*(?:o.?clock|mani)\b',
+    caseSensitive: false,
+  ).allMatches(value);
+  for (final match in matches) {
+    final rawHour = [
+      match.group(1),
+      match.group(3),
+      match.group(5),
+      match.group(7),
+    ].whereType<String>().first;
+    final hour = int.tryParse(rawHour);
+    if (hour != null && hour >= 1 && hour <= 12) return true;
+  }
+  return false;
+}
+
+bool isSeparateCygnusInstructionDuringClarification(String input) {
+  final value = input.toLowerCase();
+  final newSchedule =
+      RegExp(
+        r'\b(schedule|scheduling|scheduled|create a plan|make a plan)\b',
+      ).hasMatch(value) &&
+      RegExp(r'\bmotor\s*[1-3]\b').hasMatch(value) &&
+      RegExp(
+        r'\bat\b|\b\d{1,2}:\d{2}\b|\b\d+\s*(?:min|minutes?|hours?)\b',
+      ).hasMatch(value);
+  final immediateMotorCommand =
+      RegExp(r'\bmotor\s*[1-3]\b').hasMatch(value) &&
+      RegExp(
+        r'\b(start|stop|turn on|turn off|switch on|switch off)\b',
+      ).hasMatch(value);
+  final standaloneRequest = RegExp(
+    r'^\s*(?:please\s+)?'
+    r'(?:check|show|list|open|scan|analy[sz]e|go to|navigate|tell me|'
+    r"what(?:'s|\s+is)|how much|status|temperature|humidity|soil|water)\b",
+  ).hasMatch(value);
+  return newSchedule || immediateMotorCommand || standaloneRequest;
+}
+
 class CygnusQueuedInstruction {
   const CygnusQueuedInstruction({
     required this.id,

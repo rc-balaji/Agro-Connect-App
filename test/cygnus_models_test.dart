@@ -102,6 +102,55 @@ void main() {
     );
   });
 
+  test('schedule times without AM or PM need clarification', () {
+    expect(
+      needsCygnusScheduleMeridiemClarification(
+        'Schedule motor 1 tomorrow at 6:30 for 20 minutes',
+      ),
+      isTrue,
+    );
+    expect(
+      needsCygnusScheduleMeridiemClarification(
+        'Schedule motor 1 tomorrow at 6 PM',
+      ),
+      isFalse,
+    );
+    expect(
+      needsCygnusScheduleMeridiemClarification(
+        'Schedule motor 1 tomorrow at 18:30',
+      ),
+      isFalse,
+    );
+    expect(
+      needsCygnusScheduleMeridiemClarification(
+        'Schedule motor 1 tomorrow evening at 6',
+      ),
+      isFalse,
+    );
+    expect(
+      needsCygnusScheduleMeridiemClarification('Turn motor 1 on at 6'),
+      isFalse,
+    );
+  });
+
+  test('new commands are queued separately from clarification answers', () {
+    expect(
+      isSeparateCygnusInstructionDuringClarification(
+        'Schedule motor 2 tomorrow at 7 PM',
+      ),
+      isTrue,
+    );
+    expect(
+      isSeparateCygnusInstructionDuringClarification('Motor 3 stop pannidu'),
+      isTrue,
+    );
+    expect(
+      isSeparateCygnusInstructionDuringClarification('Tomorrow at 7 PM'),
+      isFalse,
+    );
+    expect(isSeparateCygnusInstructionDuringClarification('PM'), isFalse);
+  });
+
   test('queued instruction round trips state before restart recovery', () {
     const instruction = CygnusQueuedInstruction(
       id: 'instruction-1',

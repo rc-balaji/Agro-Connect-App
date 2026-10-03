@@ -25,10 +25,7 @@ class SystemPage extends StatelessWidget {
           style: TextStyle(color: AppTheme.muted),
         ),
         const SizedBox(height: 16),
-        _BackgroundStatusCard(
-          background: background,
-          controller: controller,
-        ),
+        _BackgroundStatusCard(background: background, controller: controller),
         const SizedBox(height: 14),
         _Section(
           title: 'Network',
@@ -37,17 +34,23 @@ class SystemPage extends StatelessWidget {
             _Row(label: 'Transport', value: controller.network.label),
             _Row(
               label: 'Network interface',
-              value: controller.network.hasInterface ? 'Available' : 'Unavailable',
+              value: controller.network.hasInterface
+                  ? 'Available'
+                  : 'Unavailable',
             ),
             _Row(
               label: 'Internet reachability',
-              value: controller.internetReachable ? 'Reachable' : 'Not reachable',
+              value: controller.internetReachable
+                  ? 'Reachable'
+                  : 'Not reachable',
             ),
             _Row(
               label: 'Last network check',
               value: controller.network.lastChecked == null
                   ? '--'
-                  : TimeOfDay.fromDateTime(controller.network.lastChecked!).format(context),
+                  : TimeOfDay.fromDateTime(
+                      controller.network.lastChecked!,
+                    ).format(context),
             ),
             const SizedBox(height: 10),
             SizedBox(
@@ -82,7 +85,9 @@ class SystemPage extends StatelessWidget {
             SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
-                onPressed: controller.internetReachable ? controller.reconnectMqtt : null,
+                onPressed: controller.internetReachable
+                    ? controller.reconnectMqtt
+                    : null,
                 icon: const Icon(Icons.sync_rounded),
                 label: const Text('Reconnect MQTT'),
               ),
@@ -107,13 +112,16 @@ class SystemPage extends StatelessWidget {
           children: [
             _Row(
               label: 'History points',
-              value: '${controller.history.length} / ${MqttConfig.maxHistoryPoints}',
+              value:
+                  '${controller.history.length} / ${MqttConfig.maxHistoryPoints}',
             ),
             const SizedBox(height: 10),
             SizedBox(
               width: double.infinity,
               child: OutlinedButton.icon(
-                onPressed: controller.history.isEmpty ? null : controller.clearHistory,
+                onPressed: controller.history.isEmpty
+                    ? null
+                    : controller.clearHistory,
                 icon: const Icon(Icons.delete_outline_rounded),
                 label: const Text('Clear Local History'),
               ),
@@ -136,7 +144,11 @@ class SystemPage extends StatelessWidget {
               Expanded(
                 child: Text(
                   'This prototype uses a public MQTT broker. Use a private authenticated broker before a real farm deployment.',
-                  style: TextStyle(color: AppTheme.muted, height: 1.45, fontSize: 12),
+                  style: TextStyle(
+                    color: AppTheme.muted,
+                    height: 1.45,
+                    fontSize: 12,
+                  ),
                 ),
               ),
             ],
@@ -158,7 +170,7 @@ class _BackgroundStatusCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final preview = _previewText();
+    final preview = _notificationReadings();
 
     return Container(
       decoration: BoxDecoration(
@@ -205,12 +217,19 @@ class _BackgroundStatusCard extends StatelessWidget {
                       children: [
                         Text(
                           'Background live status',
-                          style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16),
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            fontSize: 16,
+                          ),
                         ),
                         SizedBox(height: 4),
                         Text(
                           'Keep selected farm readings visible even when the app is closed.',
-                          style: TextStyle(color: AppTheme.muted, fontSize: 12.2, height: 1.4),
+                          style: TextStyle(
+                            color: AppTheme.muted,
+                            fontSize: 12.2,
+                            height: 1.4,
+                          ),
                         ),
                       ],
                     ),
@@ -228,12 +247,20 @@ class _BackgroundStatusCard extends StatelessWidget {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(Icons.error_outline_rounded, color: AppTheme.red, size: 17),
+                    const Icon(
+                      Icons.error_outline_rounded,
+                      color: AppTheme.red,
+                      size: 17,
+                    ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
                         background.error!,
-                        style: const TextStyle(color: AppTheme.red, fontSize: 11.5, fontWeight: FontWeight.w700),
+                        style: const TextStyle(
+                          color: AppTheme.red,
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w700,
+                        ),
                       ),
                     ),
                   ],
@@ -339,7 +366,8 @@ class _BackgroundStatusCard extends StatelessWidget {
                           _ToggleRow(
                             icon: Icons.event_available_rounded,
                             title: 'Plan activity alerts',
-                            subtitle: 'A dismissible alert when a planned motor run starts or completes',
+                            subtitle:
+                                'A dismissible alert when a planned motor run starts or completes',
                             value: background.scheduleAlerts,
                             onChanged: background.setScheduleAlerts,
                           ),
@@ -350,7 +378,9 @@ class _BackgroundStatusCard extends StatelessWidget {
                             decoration: BoxDecoration(
                               color: const Color(0xFF071710),
                               borderRadius: BorderRadius.circular(16),
-                              border: Border.all(color: AppTheme.border.withValues(alpha: 0.8)),
+                              border: Border.all(
+                                color: AppTheme.border.withValues(alpha: 0.8),
+                              ),
                             ),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
@@ -365,19 +395,7 @@ class _BackgroundStatusCard extends StatelessWidget {
                                   ),
                                 ),
                                 const SizedBox(height: 8),
-                                const Text(
-                                  'AGRO CONNECT • Live Monitor',
-                                  style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12.5),
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  preview,
-                                  style: const TextStyle(
-                                    color: AppTheme.muted,
-                                    fontSize: 11.5,
-                                    height: 1.35,
-                                  ),
-                                ),
+                                _NotificationPreview(readings: preview),
                               ],
                             ),
                           ),
@@ -402,37 +420,188 @@ class _BackgroundStatusCard extends StatelessWidget {
     );
   }
 
-  String _previewText() {
-    final parts = <String>[];
+  List<_NotificationReading> _notificationReadings() {
+    final readings = <_NotificationReading>[];
     if (background.showDevice) {
-      parts.add(controller.deviceOnline ? 'Online' : 'Offline');
-    }
-    if (background.showTemperature) {
-      parts.add('${_format(controller.telemetry.temperature)}°C');
-    }
-    if (background.showHumidity) {
-      parts.add('Humidity ${_format(controller.telemetry.humidity)}%');
-    }
-    if (background.showSoil) {
-      parts.add('Soil ${_format(controller.telemetry.soil)}%');
-    }
-    if (background.showWater) {
-      parts.add('Water ${_format(controller.telemetry.waterLevel)}%');
-    }
-    if (background.showMotors) {
-      parts.add(
-        'M1 ${controller.telemetry.led2 ? 'ON' : 'OFF'}  '
-        'M2 ${controller.telemetry.led3 ? 'ON' : 'OFF'}  '
-        'M3 ${controller.telemetry.led4 ? 'ON' : 'OFF'}',
+      readings.add(
+        _NotificationReading(
+          icon: controller.deviceOnline
+              ? Icons.cloud_done_rounded
+              : Icons.cloud_off_rounded,
+          label: 'Device',
+          value: controller.deviceOnline ? 'Online' : 'Offline',
+          color: controller.deviceOnline ? AppTheme.emeraldSoft : AppTheme.red,
+        ),
       );
     }
-    return parts.isEmpty ? 'Background monitoring is active' : parts.join(' • ');
+    if (background.showTemperature) {
+      readings.add(
+        _NotificationReading(
+          icon: Icons.thermostat_rounded,
+          label: 'Temperature',
+          value: '${_format(controller.telemetry.temperature)}°C',
+          color: AppTheme.amber,
+        ),
+      );
+    }
+    if (background.showHumidity) {
+      readings.add(
+        _NotificationReading(
+          icon: Icons.water_drop_outlined,
+          label: 'Humidity',
+          value: '${_format(controller.telemetry.humidity)}%',
+          color: AppTheme.cyan,
+        ),
+      );
+    }
+    if (background.showSoil) {
+      readings.add(
+        _NotificationReading(
+          icon: Icons.grass_rounded,
+          label: 'Soil moisture',
+          value: '${_format(controller.telemetry.soil)}%',
+          color: AppTheme.emeraldSoft,
+        ),
+      );
+    }
+    if (background.showWater) {
+      readings.add(
+        _NotificationReading(
+          icon: Icons.water_rounded,
+          label: 'Water level',
+          value: '${_format(controller.telemetry.waterLevel)}%',
+          color: const Color(0xFF5EB6FF),
+        ),
+      );
+    }
+    if (background.showMotors) {
+      readings.add(
+        _NotificationReading(
+          icon: Icons.settings_input_component_rounded,
+          label: 'Motors',
+          value:
+              'M1 ${controller.telemetry.led2 ? 'ON' : 'OFF'} · '
+              'M2 ${controller.telemetry.led3 ? 'ON' : 'OFF'} · '
+              'M3 ${controller.telemetry.led4 ? 'ON' : 'OFF'}',
+          color: AppTheme.emerald,
+        ),
+      );
+    }
+    return readings;
   }
 
   String _format(num value) {
     final asDouble = value.toDouble();
-    if (asDouble == asDouble.roundToDouble()) return asDouble.round().toString();
+    if (asDouble == asDouble.roundToDouble())
+      return asDouble.round().toString();
     return asDouble.toStringAsFixed(1);
+  }
+}
+
+class _NotificationReading {
+  const _NotificationReading({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+  final Color color;
+}
+
+class _NotificationPreview extends StatefulWidget {
+  const _NotificationPreview({required this.readings});
+
+  final List<_NotificationReading> readings;
+
+  @override
+  State<_NotificationPreview> createState() => _NotificationPreviewState();
+}
+
+class _NotificationPreviewState extends State<_NotificationPreview> {
+  static const _collapsedCount = 4;
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final visibleCount = _expanded
+        ? widget.readings.length
+        : widget.readings.length < _collapsedCount
+        ? widget.readings.length
+        : _collapsedCount;
+    final canExpand = widget.readings.length > _collapsedCount;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'AGRO CONNECT • Live Monitor',
+          style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12.5),
+        ),
+        const SizedBox(height: 5),
+        if (widget.readings.isEmpty)
+          const Text(
+            'Background monitoring is active',
+            style: TextStyle(color: AppTheme.muted, fontSize: 11.5),
+          )
+        else
+          AnimatedSize(
+            duration: const Duration(milliseconds: 240),
+            curve: Curves.easeInOutCubic,
+            alignment: Alignment.topCenter,
+            child: Column(
+              children: [
+                for (final reading in widget.readings.take(visibleCount))
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 3),
+                    child: Row(
+                      children: [
+                        Icon(reading.icon, size: 16, color: reading.color),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            reading.label,
+                            style: const TextStyle(
+                              color: AppTheme.muted,
+                              fontSize: 11.5,
+                            ),
+                          ),
+                        ),
+                        Text(
+                          reading.value,
+                          style: const TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        if (canExpand)
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              onPressed: () => setState(() => _expanded = !_expanded),
+              style: TextButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+              ),
+              icon: AnimatedRotation(
+                turns: _expanded ? 0.5 : 0,
+                duration: const Duration(milliseconds: 220),
+                child: const Icon(Icons.keyboard_arrow_down_rounded, size: 19),
+              ),
+              label: Text(_expanded ? 'Show less' : 'Show all'),
+            ),
+          ),
+      ],
+    );
   }
 }
 
@@ -479,13 +648,20 @@ class _ToggleRow extends StatelessWidget {
               children: [
                 Text(
                   title,
-                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12.5),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12.5,
+                  ),
                 ),
                 if (subtitle != null) ...[
                   const SizedBox(height: 2),
                   Text(
                     subtitle!,
-                    style: const TextStyle(color: AppTheme.muted, fontSize: 10.5, height: 1.3),
+                    style: const TextStyle(
+                      color: AppTheme.muted,
+                      fontSize: 10.5,
+                      height: 1.3,
+                    ),
                   ),
                 ],
               ],
@@ -499,7 +675,11 @@ class _ToggleRow extends StatelessWidget {
 }
 
 class _Section extends StatelessWidget {
-  const _Section({required this.title, required this.icon, required this.children});
+  const _Section({
+    required this.title,
+    required this.icon,
+    required this.children,
+  });
 
   final String title;
   final IconData icon;
@@ -517,7 +697,13 @@ class _Section extends StatelessWidget {
               children: [
                 Icon(icon, color: AppTheme.emerald, size: 20),
                 const SizedBox(width: 9),
-                Text(title, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 16,
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 14),
@@ -541,7 +727,9 @@ class _Row extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 7),
       child: Row(
         children: [
-          Expanded(child: Text(label, style: const TextStyle(color: AppTheme.muted))),
+          Expanded(
+            child: Text(label, style: const TextStyle(color: AppTheme.muted)),
+          ),
           Flexible(
             child: Text(
               value,
@@ -568,7 +756,10 @@ class _Topic extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: const TextStyle(color: AppTheme.muted, fontSize: 11)),
+          Text(
+            label,
+            style: const TextStyle(color: AppTheme.muted, fontSize: 11),
+          ),
           const SizedBox(height: 4),
           SelectableText(
             value,

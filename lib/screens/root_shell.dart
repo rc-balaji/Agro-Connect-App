@@ -31,6 +31,9 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   final GlobalKey<LeafAiPageState> _leafAiKey = GlobalKey<LeafAiPageState>();
   late final List<Widget> _pages;
   Timer? _cygnusNudgeTimer;
+  Timer? _pageTransitionTimer;
+  int? _previousIndex;
+  bool _pageTransitioning = false;
   bool _showCygnusNudge = false;
 
   static const _labels = [
@@ -80,13 +83,34 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _cygnusNudgeTimer?.cancel();
+    _pageTransitionTimer?.cancel();
     super.dispose();
   }
 
   void _selectPage(int value) {
     Navigator.of(context).maybePop();
-    if (_index != value) setState(() => _index = value);
+    _changePage(value);
     if (value == 0) _showHomeCygnusNudge();
+  }
+
+  void _changePage(int value) {
+    if (!mounted || _index == value) return;
+    _pageTransitionTimer?.cancel();
+    setState(() {
+      _previousIndex = _index;
+      _index = value;
+      _pageTransitioning = true;
+    });
+    _pageTransitionTimer = Timer(
+      Duration(milliseconds: value == 6 || _previousIndex == 6 ? 560 : 360),
+      () {
+        if (!mounted) return;
+        setState(() {
+          _previousIndex = null;
+          _pageTransitioning = false;
+        });
+      },
+    );
   }
 
   void _showHomeCygnusNudge() {
@@ -111,7 +135,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
     };
     final target = mapping[page.toLowerCase()];
     if (target == null || !mounted) return;
-    if (_index != target) setState(() => _index = target);
+    _changePage(target);
     if (target == 0) _showHomeCygnusNudge();
   }
 
@@ -126,11 +150,12 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
     }
 
     if (_index != 0) {
-      setState(() => _index = 0);
+      _changePage(0);
       return;
     }
 
-    final shouldExit = await showDialog<bool>(
+    final shouldExit =
+        await showDialog<bool>(
           context: context,
           builder: (dialogContext) => AlertDialog(
             title: const Text('Exit AGRO CONNECT?'),
@@ -163,80 +188,153 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
       },
       child: Scaffold(
         key: _scaffoldKey,
-      drawer: _AgroDrawer(
-        selectedIndex: _index,
-        onSelectPage: _selectPage,
-      ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            Builder(
-              builder: (context) => _ShellHeader(
-                title: _labels[_index],
-                showAiTag: _index == 5 || _index == 6,
-                cygnusSelected: _index == 6,
-                onMenu: () => Scaffold.of(context).openDrawer(),
-                onCygnus: () => _navigateByName('cygnus'),
+        drawer: _AgroDrawer(selectedIndex: _index, onSelectPage: _selectPage),
+        body: SafeArea(
+          child: Column(
+            children: [
+              Builder(
+                builder: (context) => _ShellHeader(
+                  title: _labels[_index],
+                  showAiTag: _index == 5 || _index == 6,
+                  cygnusSelected: _index == 6,
+                  onMenu: () => Scaffold.of(context).openDrawer(),
+                  onCygnus: () => _navigateByName('cygnus'),
+                ),
               ),
-            ),
-            AnimatedSwitcher(
-              duration: const Duration(milliseconds: 260),
-              switchInCurve: Curves.easeOutBack,
-              switchOutCurve: Curves.easeIn,
-              child: (_index == 0 && _showCygnusNudge)
-                  ? _CygnusHomeNudge(
-                      key: const ValueKey('cygnus-home-nudge'),
-                      onTap: () {
-                        setState(() => _showCygnusNudge = false);
-                        _navigateByName('cygnus');
-                      },
-                      onDismiss: () => setState(() => _showCygnusNudge = false),
-                    )
-                  : const SizedBox.shrink(key: ValueKey('cygnus-home-nudge-hidden')),
-            ),
-            Selector<AgroController, String?>(
-              selector: (_, controller) => controller.error,
-              builder: (context, error, _) {
-                if (error == null || error.isEmpty) return const SizedBox.shrink();
-                return Container(
-                  width: double.infinity,
-                  margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-                  padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
-                  decoration: BoxDecoration(
-                    color: AppTheme.red.withValues(alpha: 0.08),
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: AppTheme.red.withValues(alpha: 0.25)),
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.error_outline_rounded, color: AppTheme.red, size: 19),
-                      const SizedBox(width: 9),
-                      Expanded(
-                        child: Text(
-                          error,
-                          style: const TextStyle(
-                            color: AppTheme.red,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 260),
+                switchInCurve: Curves.easeOutBack,
+                switchOutCurve: Curves.easeIn,
+                child: (_index == 0 && _showCygnusNudge)
+                    ? _CygnusHomeNudge(
+                        key: const ValueKey('cygnus-home-nudge'),
+                        onTap: () {
+                          setState(() => _showCygnusNudge = false);
+                          _navigateByName('cygnus');
+                        },
+                        onDismiss: () =>
+                            setState(() => _showCygnusNudge = false),
+                      )
+                    : const SizedBox.shrink(
+                        key: ValueKey('cygnus-home-nudge-hidden'),
+                      ),
+              ),
+              Selector<AgroController, String?>(
+                selector: (_, controller) => controller.error,
+                builder: (context, error, _) {
+                  if (error == null || error.isEmpty)
+                    return const SizedBox.shrink();
+                  return Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                    padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
+                    decoration: BoxDecoration(
+                      color: AppTheme.red.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: AppTheme.red.withValues(alpha: 0.25),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(
+                          Icons.error_outline_rounded,
+                          color: AppTheme.red,
+                          size: 19,
+                        ),
+                        const SizedBox(width: 9),
+                        Expanded(
+                          child: Text(
+                            error,
+                            style: const TextStyle(
+                              color: AppTheme.red,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                         ),
+                        IconButton(
+                          visualDensity: VisualDensity.compact,
+                          onPressed: context.read<AgroController>().clearError,
+                          icon: const Icon(
+                            Icons.close_rounded,
+                            size: 18,
+                            color: AppTheme.red,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+              Expanded(
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    for (final pageIndex in [
+                      ...List<int>.generate(
+                        _pages.length,
+                        (index) => index,
+                      ).where((index) => index != _index),
+                      _index,
+                    ])
+                      _ShellPageLayer(
+                        key: ValueKey(pageIndex),
+                        page: _pages[pageIndex],
+                        active: pageIndex == _index,
+                        visible:
+                            pageIndex == _index ||
+                            (_pageTransitioning && pageIndex == _previousIndex),
+                        cygnus: pageIndex == 6,
                       ),
-                      IconButton(
-                        visualDensity: VisualDensity.compact,
-                        onPressed: context.read<AgroController>().clearError,
-                        icon: const Icon(Icons.close_rounded, size: 18, color: AppTheme.red),
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
-            Expanded(
-              child: IndexedStack(index: _index, children: _pages),
-            ),
-          ],
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
+    );
+  }
+}
+
+class _ShellPageLayer extends StatelessWidget {
+  const _ShellPageLayer({
+    super.key,
+    required this.page,
+    required this.active,
+    required this.visible,
+    required this.cygnus,
+  });
+
+  final Widget page;
+  final bool active;
+  final bool visible;
+  final bool cygnus;
+
+  @override
+  Widget build(BuildContext context) {
+    final duration = Duration(milliseconds: cygnus ? 520 : 320);
+    return Offstage(
+      offstage: !visible,
+      child: IgnorePointer(
+        ignoring: !active,
+        child: AnimatedOpacity(
+          duration: duration,
+          curve: Curves.easeOutCubic,
+          opacity: active ? 1 : 0,
+          child: AnimatedSlide(
+            duration: duration,
+            curve: Curves.easeOutCubic,
+            offset: active ? Offset.zero : const Offset(-0.035, 0),
+            child: AnimatedScale(
+              duration: duration,
+              curve: Curves.easeOutCubic,
+              scale: cygnus && !active ? 0.975 : 1,
+              child: page,
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -268,7 +366,9 @@ class _CygnusHomeNudge extends StatelessWidget {
                 colors: [Color(0xFF14264B), Color(0xFF0E2B22)],
               ),
               borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: const Color(0xFF6D7DFF).withValues(alpha: 0.32)),
+              border: Border.all(
+                color: const Color(0xFF6D7DFF).withValues(alpha: 0.32),
+              ),
               boxShadow: [
                 BoxShadow(
                   color: const Color(0xFF536DFF).withValues(alpha: 0.10),
@@ -305,9 +405,19 @@ class _CygnusHomeNudge extends StatelessWidget {
                     children: [
                       Row(
                         children: [
-                          Text('Feel free to ask me', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w900)),
+                          Text(
+                            'Feel free to ask me',
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
                           SizedBox(width: 6),
-                          Icon(Icons.auto_awesome_rounded, size: 14, color: Color(0xFF7ED8FF)),
+                          Icon(
+                            Icons.auto_awesome_rounded,
+                            size: 14,
+                            color: Color(0xFF7ED8FF),
+                          ),
                         ],
                       ),
                       SizedBox(height: 2),
@@ -315,7 +425,11 @@ class _CygnusHomeNudge extends StatelessWidget {
                         'Try “Motor 2 start pannuda” or “Temperature enna?”',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: AppTheme.muted, fontSize: 10.5, fontWeight: FontWeight.w600),
+                        style: TextStyle(
+                          color: AppTheme.muted,
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                     ],
                   ),
@@ -324,7 +438,11 @@ class _CygnusHomeNudge extends StatelessWidget {
                   visualDensity: VisualDensity.compact,
                   tooltip: 'Dismiss',
                   onPressed: onDismiss,
-                  icon: const Icon(Icons.close_rounded, size: 17, color: AppTheme.muted),
+                  icon: const Icon(
+                    Icons.close_rounded,
+                    size: 17,
+                    color: AppTheme.muted,
+                  ),
                 ),
               ],
             ),
@@ -435,7 +553,9 @@ class _ShellHeader extends StatelessWidget {
                   boxShadow: cygnusSelected
                       ? [
                           BoxShadow(
-                            color: const Color(0xFF67B8FF).withValues(alpha: 0.34),
+                            color: const Color(
+                              0xFF67B8FF,
+                            ).withValues(alpha: 0.34),
                             blurRadius: 20,
                             spreadRadius: 1,
                           ),
@@ -455,10 +575,14 @@ class _ShellHeader extends StatelessWidget {
             builder: (_, online, __) => Container(
               padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
               decoration: BoxDecoration(
-                color: (online ? AppTheme.emerald : AppTheme.red).withValues(alpha: 0.09),
+                color: (online ? AppTheme.emerald : AppTheme.red).withValues(
+                  alpha: 0.09,
+                ),
                 borderRadius: BorderRadius.circular(99),
                 border: Border.all(
-                  color: (online ? AppTheme.emerald : AppTheme.red).withValues(alpha: 0.22),
+                  color: (online ? AppTheme.emerald : AppTheme.red).withValues(
+                    alpha: 0.22,
+                  ),
                 ),
               ),
               child: Text(
@@ -476,7 +600,6 @@ class _ShellHeader extends StatelessWidget {
     );
   }
 }
-
 
 class _MiniAiTag extends StatelessWidget {
   const _MiniAiTag();
@@ -504,10 +627,7 @@ class _MiniAiTag extends StatelessWidget {
 }
 
 class _AgroDrawer extends StatelessWidget {
-  const _AgroDrawer({
-    required this.selectedIndex,
-    required this.onSelectPage,
-  });
+  const _AgroDrawer({required this.selectedIndex, required this.onSelectPage});
 
   final int selectedIndex;
   final ValueChanged<int> onSelectPage;
@@ -550,7 +670,10 @@ class _AgroDrawer extends StatelessWidget {
                       children: [
                         Text(
                           'AGRO CONNECT',
-                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w900,
+                          ),
                         ),
                         SizedBox(height: 3),
                         Text(
@@ -579,7 +702,9 @@ class _AgroDrawer extends StatelessWidget {
                     padding: const EdgeInsets.only(bottom: 4),
                     child: ListTile(
                       selected: selected,
-                      selectedTileColor: AppTheme.emerald.withValues(alpha: 0.10),
+                      selectedTileColor: AppTheme.emerald.withValues(
+                        alpha: 0.10,
+                      ),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(14),
                       ),
@@ -599,20 +724,26 @@ class _AgroDrawer extends StatelessWidget {
                             )
                           : Icon(
                               item.icon,
-                              color: selected ? AppTheme.emerald : AppTheme.muted,
+                              color: selected
+                                  ? AppTheme.emerald
+                                  : AppTheme.muted,
                             ),
                       title: Text(
                         item.label,
                         style: TextStyle(
-                          fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+                          fontWeight: selected
+                              ? FontWeight.w800
+                              : FontWeight.w600,
                         ),
                       ),
                       trailing: (index == 5 || index == 6 || selected)
                           ? Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                if (index == 5 || index == 6) const _MiniAiTag(),
-                                if ((index == 5 || index == 6) && selected) const SizedBox(width: 6),
+                                if (index == 5 || index == 6)
+                                  const _MiniAiTag(),
+                                if ((index == 5 || index == 6) && selected)
+                                  const SizedBox(width: 6),
                                 if (selected)
                                   const Icon(
                                     Icons.chevron_right_rounded,

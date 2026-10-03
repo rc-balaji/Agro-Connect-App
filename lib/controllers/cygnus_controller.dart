@@ -47,6 +47,7 @@ class CygnusController extends ChangeNotifier {
   bool _activeInstructionHadSideEffect = false;
   String? _activeToolFailure;
   String? _deferredDecision;
+  ({String text, bool fromVoice})? _deferredClarificationAnswer;
   bool _renderingReply = false;
   bool _loadingSession = false;
   bool _voiceReply = false;
@@ -120,6 +121,51 @@ class CygnusController extends ChangeNotifier {
       _firstQueuedInstruction?.awaitingClarification ?? false;
   String? get clarificationQuestion =>
       _firstQueuedInstruction?.clarificationQuestion;
+  List<String> get clarificationOptions {
+    final question = clarificationQuestion?.toLowerCase() ?? '';
+    if (RegExp(r'\bam\b.*\bpm\b').hasMatch(question)) {
+      return const ['AM', 'PM'];
+    }
+    if (clarificationHasDatePicker ||
+        question.contains('weekday') ||
+        question.contains('கிழமை')) {
+      return const ['Today', 'Tomorrow'];
+    }
+    if (question.contains('once, daily, or weekly')) {
+      return const ['Once', 'Daily', 'Weekly'];
+    }
+    if (question.contains('which motor') || question.contains('மோட்டார்')) {
+      return const ['Motor 1', 'Motor 2', 'Motor 3'];
+    }
+    if (question.contains('which weekdays') ||
+        question.contains('எந்த கிழமைகளில்')) {
+      return const ['Monday', 'Wednesday', 'Friday', 'Every day'];
+    }
+    if (question.contains('how long') ||
+        question.contains('duration') ||
+        question.contains('எவ்வளவு நேரம்')) {
+      return const ['15 minutes', '30 minutes', '1 hour', '2 hours'];
+    }
+    if (question.contains('once, daily, or weekly') ||
+        question.contains('ஒருமுறை, தினமும்')) {
+      return const ['Once', 'Daily', 'Weekly'];
+    }
+    return const [];
+  }
+
+  bool get clarificationHasDatePicker => RegExp(
+    r'date|तारीख|തീയതി|ದಿನಾಂಕ|தேதி',
+  ).hasMatch(clarificationQuestion?.toLowerCase() ?? '');
+  bool get clarificationHasTimePicker {
+    final question = clarificationQuestion?.toLowerCase() ?? '';
+    if (question.contains('how long') ||
+        question.contains('duration') ||
+        question.contains('எவ்வளவு நேரம்')) {
+      return false;
+    }
+    return RegExp(r'\btime\b|நேரம்|समय|സമയം|ಸമಯ').hasMatch(question);
+  }
+
   bool get renderingReply => _renderingReply;
   bool get loadingSession => _loadingSession;
   bool get voiceReply => _voiceReply;
@@ -352,7 +398,34 @@ class CygnusController extends ChangeNotifier {
     }
     if (awaitingClarification) {
       if (decision == CygnusDecision.skip) {
+        if (_busy) {
+          _deferredDecision = 'skip_clarification';
+          return;
+        }
         await _skipClarification();
+        return;
+      }
+      if (_busy) {
+        _deferredClarificationAnswer ??= (text: text, fromVoice: fromVoice);
+        return;
+      }
+      final clarificationParts = splitCygnusInstructions(text);
+      final additions = clarificationParts
+          .where(isSeparateCygnusInstructionDuringClarification)
+          .toList(growable: false);
+      if (additions.isNotEmpty) {
+        final answerParts = clarificationParts
+            .where(
+              (part) => !isSeparateCygnusInstructionDuringClarification(part),
+            )
+            .toList(growable: false);
+        await _queueInstructionSegments(additions, fromVoice: fromVoice);
+        if (answerParts.isNotEmpty) {
+          await _answerInstructionClarification(
+            answerParts.join('\n'),
+            fromVoice: fromVoice,
+          );
+        }
         return;
       }
       await _answerInstructionClarification(text, fromVoice: fromVoice);
@@ -361,30 +434,47 @@ class CygnusController extends ChangeNotifier {
 
     final instructions = splitCygnusInstructions(text);
     if (instructions.isEmpty) return;
+    await _queueInstructionSegments(instructions, fromVoice: fromVoice);
+  }
+
+  Future<void> _queueInstructionSegments(
+    List<String> instructions, {
+    required bool fromVoice,
+  }) async {
+    if (instructions.isEmpty) return;
     if (_instructionQueue.isEmpty && _activeInstruction == null) {
       _completedInstructionCount = 0;
       _skippedInstructionCount = 0;
       _instructionBatchSize = 0;
     }
-    for (final instruction in instructions) {
-      _instructionQueue.add(
-        _CygnusInstructionEntry(
-          CygnusQueuedInstruction(
+    final addedInstructions = instructions
+        .map(
+          (instruction) => CygnusQueuedInstruction(
             id: _id('instruction'),
             text: instruction,
             fromVoice: fromVoice,
           ),
-        ),
-      );
+        )
+        .toList(growable: false);
+    final addedIds = addedInstructions
+        .map((instruction) => instruction.id)
+        .toSet();
+    for (final instruction in addedInstructions) {
+      _instructionQueue.add(_CygnusInstructionEntry(instruction));
     }
-    _instructionBatchSize += instructions.length;
+    _instructionBatchSize += addedInstructions.length;
     try {
       await _persistInstructionQueue();
     } catch (error, stack) {
       debugPrint('Cygnus instruction queue persistence failed: $error\n$stack');
+      for (final entry in _instructionQueue.toList()) {
+        if (addedIds.contains(entry.instruction.id)) entry.unlink();
+      }
+      _instructionBatchSize -= addedInstructions.length;
       _error =
-          'Could not save the instruction queue. No queued actions were started.';
+          'Could not save the new instructions. They were removed without running; earlier queued instructions are unchanged.';
       await _append(_assistantMessage(_error!));
+      notifyListeners();
       return;
     }
     notifyListeners();
@@ -624,17 +714,17 @@ class CygnusController extends ChangeNotifier {
     }
 
     if (needsCygnusScheduleDateClarification(text)) {
-      final question = switch (_languageCode) {
-        'ta' =>
-          'இந்த அட்டவணை எந்த தேதி அல்லது கிழமையிலிருந்து தொடங்க வேண்டும்?',
-        'hi' => 'यह शेड्यूल किस तारीख या दिन से शुरू होना चाहिए?',
-        'ml' => 'ഈ ഷെഡ്യൂൾ ഏത് തീയതി അല്ലെങ്കിൽ ദിവസത്തിൽ നിന്ന് തുടങ്ങണം?',
-        'kn' => 'ಈ ವೇಳಾಪಟ್ಟಿ ಯಾವ ದಿನಾಂಕ ಅಥವಾ ವಾರದ ದಿನದಿಂದ ಆರಂಭವಾಗಬೇಕು?',
-        _ => 'What date or weekday should this schedule start on?',
-      };
-      await _requestInstructionClarification(question);
-      await _appendAnimatedAssistant(question);
-      if (fromVoice) await _handleVoiceReply(question);
+      await _askScheduleClarification(
+        _scheduleDateQuestion(),
+        fromVoice: fromVoice,
+      );
+      return;
+    }
+    if (needsCygnusScheduleMeridiemClarification(text)) {
+      await _askScheduleClarification(
+        _scheduleMeridiemQuestion(text),
+        fromVoice: fromVoice,
+      );
       return;
     }
 
@@ -747,6 +837,58 @@ class CygnusController extends ChangeNotifier {
       if (_instructionQueue.isNotEmpty && !awaitingClarification) return;
       await startVoiceInput(keepConversation: true, stopCurrentSpeech: false);
     }
+  }
+
+  Future<void> _askScheduleClarification(
+    String question, {
+    required bool fromVoice,
+  }) async {
+    await _requestInstructionClarification(question);
+    await _appendAnimatedAssistant(question);
+    if (fromVoice) await _handleVoiceReply(question);
+  }
+
+  String _scheduleDateQuestion() => switch (_languageCode) {
+    'ta' => 'இந்த அட்டவணை எந்த தேதி அல்லது கிழமையிலிருந்து தொடங்க வேண்டும்?',
+    'hi' => 'यह शेड्यूल किस तारीख या दिन से शुरू होना चाहिए?',
+    'ml' => 'ഈ ഷെഡ്യൂൾ ഏത് തീയതി അല്ലെങ്കിൽ ദിവസത്തിൽ നിന്ന് തുടങ്ങണം?',
+    'kn' => 'ಈ ವೇಳಾಪಟ್ಟಿ ಯಾವ ದಿನಾಂಕ ಅಥವಾ ವಾರದ ದಿನದಿಂದ ಆರಂಭವಾಗಬೇಕು?',
+    _ => 'What date or weekday should this schedule start on?',
+  };
+
+  String _scheduleMeridiemQuestion(String text) {
+    final match = RegExp(
+      r'\b(?:at|around|by)\s+(\d{1,2})(?::([0-5]\d))?\b|'
+      r'@\s*(\d{1,2})(?::([0-5]\d))?\b|'
+      r'\b(\d{1,2}):([0-5]\d)\b|'
+      r'\b(\d{1,2})\s*(?:o.?clock|mani)\b',
+      caseSensitive: false,
+    ).firstMatch(text.toLowerCase());
+    final hourValues = [
+      match?.group(1),
+      match?.group(3),
+      match?.group(5),
+      match?.group(7),
+    ].whereType<String>();
+    final hour = hourValues.isEmpty ? null : int.tryParse(hourValues.first);
+    final minuteValues = [
+      match?.group(2),
+      match?.group(4),
+      match?.group(6),
+    ].whereType<String>();
+    final minute = minuteValues.isEmpty ? null : minuteValues.first;
+    final time = hour == null
+        ? ''
+        : '${hour > 12 ? hour - 12 : hour}${minute == null ? '' : ':$minute'}';
+    return switch (_languageCode) {
+      'ta' =>
+        '${time.isEmpty ? 'இந்த நேரம்' : '$time மணி'} காலை AM-ஆ, மாலை PM-ஆ?',
+      'hi' => '${time.isEmpty ? 'यह समय' : '$time बजे'} AM है या PM?',
+      'ml' => '${time.isEmpty ? 'ഈ സമയം' : '$time മണി'} AM ആണോ PM ആണോ?',
+      'kn' => '${time.isEmpty ? 'ಈ ಸಮಯ' : '$time ಗಂಟೆ'} AM ಅಥವಾ PM?',
+      _ =>
+        'Did you mean ${time.isEmpty ? 'AM or PM' : '$time AM or $time PM'}?',
+    };
   }
 
   String? _explicitLanguageRequest(String text) {
@@ -1347,12 +1489,24 @@ class CygnusController extends ChangeNotifier {
     _deferredDecision = null;
     if (decision == 'confirm' && _pendingAction != null) {
       unawaited(confirmPendingAction());
+      return;
     } else if (decision == 'cancel' && _pendingAction != null) {
       unawaited(cancelPendingAction());
+      return;
     } else if (decision == 'retry' && _pendingRetry != null) {
       unawaited(retryFailedInstruction());
+      return;
     } else if (decision == 'dismiss' && _pendingRetry != null) {
       unawaited(dismissFailedInstruction());
+      return;
+    } else if (decision == 'skip_clarification' && awaitingClarification) {
+      unawaited(_skipClarification());
+      return;
+    }
+    final answer = _deferredClarificationAnswer;
+    _deferredClarificationAnswer = null;
+    if (answer != null && awaitingClarification) {
+      unawaited(sendText(answer.text, fromVoice: answer.fromVoice));
     }
   }
 
@@ -1698,6 +1852,15 @@ You may navigate the app using open_page when the user asks to open a page.
       case 'list_schedules':
         return _listSchedules(_asInt(args['motor']));
       case 'prepare_schedule':
+        final instruction = _activeInstruction;
+        if (instruction != null &&
+            needsCygnusScheduleMeridiemClarification(
+              _instructionPromptText(instruction),
+            )) {
+          return await _requestInstructionClarification(
+            _scheduleMeridiemQuestion(_instructionPromptText(instruction)),
+          );
+        }
         return _prepareSchedule(args);
       case 'prepare_update_schedule':
         return _prepareUpdateSchedule(args);
@@ -2534,12 +2697,63 @@ You may navigate the app using open_page when the user asks to open a page.
       }
     }
     if (requireFutureStart) {
-      final startsAt = DateTime.parse('${date}T${time}+05:30').toUtc();
-      if (!startsAt.isAfter(DateTime.now().toUtc())) {
+      if (!_hasFutureScheduleOccurrence(
+        date: date,
+        time: time,
+        repeat: repeat,
+        weekdays: weekdays,
+        endDate: endDate,
+      )) {
         return 'Choose a future date and time; the requested start has already passed.';
       }
     }
     return null;
+  }
+
+  bool _hasFutureScheduleOccurrence({
+    required String date,
+    required String time,
+    required String repeat,
+    required List<int> weekdays,
+    String? endDate,
+  }) {
+    final nowUtc = DateTime.now().toUtc();
+    final nowIst = nowUtc.add(const Duration(hours: 5, minutes: 30));
+    final dateParts = date.split('-').map(int.parse).toList(growable: false);
+    final startDate = DateTime.utc(dateParts[0], dateParts[1], dateParts[2]);
+    final todayIst = DateTime.utc(nowIst.year, nowIst.month, nowIst.day);
+    final firstCandidate = startDate.isAfter(todayIst) ? startDate : todayIst;
+    final searchDays = repeat == 'daily' ? 1 : 7;
+    final timeParts = time.split(':').map(int.parse).toList(growable: false);
+
+    for (var offset = 0; offset <= searchDays; offset++) {
+      final candidate = firstCandidate.add(Duration(days: offset));
+      final candidateKey = _dateKey(candidate);
+      if (candidateKey.compareTo(date) < 0 ||
+          (endDate != null &&
+              endDate.isNotEmpty &&
+              candidateKey.compareTo(endDate) > 0)) {
+        continue;
+      }
+      final occurs = switch (repeat) {
+        'once' => candidateKey == date,
+        'daily' => true,
+        'weekly' => weekdays.contains(candidate.weekday % 7),
+        _ => false,
+      };
+      if (!occurs) continue;
+
+      final startsAtUtc = DateTime.utc(
+        candidate.year,
+        candidate.month,
+        candidate.day,
+        timeParts[0],
+        timeParts[1],
+        timeParts[2],
+      ).subtract(const Duration(hours: 5, minutes: 30));
+      if (startsAtUtc.isAfter(nowUtc)) return true;
+    }
+    return false;
   }
 
   String _scheduleValidationQuestion(String validation) {

@@ -73,6 +73,33 @@ class _CygnusPageState extends State<CygnusPage> {
     await context.read<CygnusController>().sendText(value);
   }
 
+  Future<void> _chooseClarificationDate() async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: now.add(const Duration(days: 1)),
+      firstDate: DateTime(now.year, now.month, now.day),
+      lastDate: DateTime(now.year + 5),
+      helpText: 'Choose schedule start date',
+    );
+    if (picked == null || !mounted) return;
+    final date =
+        '${picked.year.toString().padLeft(4, '0')}-'
+        '${picked.month.toString().padLeft(2, '0')}-'
+        '${picked.day.toString().padLeft(2, '0')}';
+    await context.read<CygnusController>().sendText(date);
+  }
+
+  Future<void> _chooseClarificationTime() async {
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: const TimeOfDay(hour: 18, minute: 0),
+      helpText: 'Choose schedule time',
+    );
+    if (picked == null || !mounted) return;
+    await context.read<CygnusController>().sendText(picked.format(context));
+  }
+
   Future<void> _pickLeaf(ImageSource source) async {
     Navigator.of(context).maybePop();
     final image = await _picker.pickImage(
@@ -429,6 +456,12 @@ class _CygnusPageState extends State<CygnusPage> {
               waitingForDecision: cygnus.pendingRetryId != null,
               waitingForClarification: cygnus.awaitingClarification,
               clarificationQuestion: cygnus.clarificationQuestion,
+              clarificationOptions: cygnus.clarificationOptions,
+              showDatePicker: cygnus.clarificationHasDatePicker,
+              showTimePicker: cygnus.clarificationHasTimePicker,
+              onClarificationAnswer: cygnus.sendText,
+              onChooseDate: _chooseClarificationDate,
+              onChooseTime: _chooseClarificationTime,
               restoring: cygnus.restoringQueue,
               failedInstruction: cygnus.pendingRetryInstruction,
             ),
@@ -2008,6 +2041,12 @@ class _InstructionQueueOverlay extends StatelessWidget {
     required this.waitingForDecision,
     required this.waitingForClarification,
     required this.clarificationQuestion,
+    required this.clarificationOptions,
+    required this.showDatePicker,
+    required this.showTimePicker,
+    required this.onClarificationAnswer,
+    required this.onChooseDate,
+    required this.onChooseTime,
     required this.restoring,
     required this.failedInstruction,
   });
@@ -2023,6 +2062,12 @@ class _InstructionQueueOverlay extends StatelessWidget {
   final bool waitingForDecision;
   final bool waitingForClarification;
   final String? clarificationQuestion;
+  final List<String> clarificationOptions;
+  final bool showDatePicker;
+  final bool showTimePicker;
+  final Future<void> Function(String answer) onClarificationAnswer;
+  final Future<void> Function() onChooseDate;
+  final Future<void> Function() onChooseTime;
   final bool restoring;
   final String? failedInstruction;
 
@@ -2044,86 +2089,123 @@ class _InstructionQueueOverlay extends StatelessWidget {
         : waitingForDecision
         ? failedInstruction
         : active ?? (waiting.isNotEmpty ? waiting.first : null);
-    return IgnorePointer(
-      child: Material(
-        color: Colors.transparent,
-        elevation: 12,
-        borderRadius: BorderRadius.circular(16),
-        child: Container(
-          padding: const EdgeInsets.fromLTRB(13, 11, 13, 10),
-          decoration: BoxDecoration(
-            color: const Color(0xF20B1E17),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: waitingForDecision
-                  ? AppTheme.amber.withValues(alpha: 0.52)
-                  : AppTheme.emerald.withValues(alpha: 0.35),
-            ),
-            boxShadow: const [
-              BoxShadow(
-                color: Color(0x44000000),
-                blurRadius: 16,
-                offset: Offset(0, 7),
-              ),
-            ],
+    return Material(
+      color: Colors.transparent,
+      elevation: 12,
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(13, 11, 13, 10),
+        decoration: BoxDecoration(
+          color: const Color(0xF20B1E17),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: waitingForDecision || waitingForClarification
+                ? AppTheme.amber.withValues(alpha: 0.52)
+                : AppTheme.emerald.withValues(alpha: 0.35),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  Icon(
-                    waitingForDecision || waitingForClarification
-                        ? Icons.warning_amber_rounded
-                        : waitingForConfirmation
-                        ? Icons.event_available_rounded
-                        : Icons.queue_play_next_rounded,
-                    size: 18,
-                    color: waitingForDecision || waitingForClarification
-                        ? AppTheme.amber
-                        : AppTheme.emeraldSoft,
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      title,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w800,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
-                  Text(
-                    '$completed done · $skipped skipped · ${waiting.length} waiting',
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x44000000),
+              blurRadius: 16,
+              offset: Offset(0, 7),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  waitingForDecision || waitingForClarification
+                      ? Icons.warning_amber_rounded
+                      : waitingForConfirmation
+                      ? Icons.event_available_rounded
+                      : Icons.queue_play_next_rounded,
+                  size: 18,
+                  color: waitingForDecision || waitingForClarification
+                      ? AppTheme.amber
+                      : AppTheme.emeraldSoft,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    title,
                     style: const TextStyle(
-                      color: AppTheme.muted,
-                      fontSize: 10.5,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 12,
                     ),
                   ),
-                ],
-              ),
-              if (current != null) ...[
-                const SizedBox(height: 7),
+                ),
                 Text(
-                  current,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: AppTheme.text, fontSize: 11.5),
+                  '$completed done · $skipped skipped · ${waiting.length} waiting',
+                  style: const TextStyle(color: AppTheme.muted, fontSize: 10.5),
                 ),
               ],
-              const SizedBox(height: 8),
-              LinearProgressIndicator(
-                value: total == 0 ? null : progress,
-                minHeight: 3,
-                borderRadius: BorderRadius.circular(99),
-                backgroundColor: AppTheme.border,
-                color: waitingForDecision || waitingForClarification
-                    ? AppTheme.amber
-                    : AppTheme.emerald,
+            ),
+            if (current != null) ...[
+              const SizedBox(height: 7),
+              Text(
+                current,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: AppTheme.text, fontSize: 11.5),
               ),
             ],
-          ),
+            if (waitingForClarification) ...[
+              const SizedBox(height: 4),
+              const Text(
+                'Choose an answer or type one. Later instructions will wait.',
+                style: TextStyle(color: AppTheme.muted, fontSize: 10.5),
+              ),
+            ],
+            if (waitingForClarification &&
+                (clarificationOptions.isNotEmpty ||
+                    showDatePicker ||
+                    showTimePicker)) ...[
+              const SizedBox(height: 9),
+              Wrap(
+                spacing: 7,
+                runSpacing: 5,
+                children: [
+                  for (final option in clarificationOptions)
+                    ActionChip(
+                      label: Text(option),
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () => onClarificationAnswer(option),
+                    ),
+                  if (showDatePicker)
+                    ActionChip(
+                      avatar: const Icon(
+                        Icons.calendar_month_rounded,
+                        size: 16,
+                      ),
+                      label: const Text('Choose date'),
+                      visualDensity: VisualDensity.compact,
+                      onPressed: onChooseDate,
+                    ),
+                  if (showTimePicker)
+                    ActionChip(
+                      avatar: const Icon(Icons.schedule_rounded, size: 16),
+                      label: const Text('Choose time'),
+                      visualDensity: VisualDensity.compact,
+                      onPressed: onChooseTime,
+                    ),
+                ],
+              ),
+            ],
+            const SizedBox(height: 8),
+            LinearProgressIndicator(
+              value: total == 0 ? null : progress,
+              minHeight: 3,
+              borderRadius: BorderRadius.circular(99),
+              backgroundColor: AppTheme.border,
+              color: waitingForDecision || waitingForClarification
+                  ? AppTheme.amber
+                  : AppTheme.emerald,
+            ),
+          ],
         ),
       ),
     );

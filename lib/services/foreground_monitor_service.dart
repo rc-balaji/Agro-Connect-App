@@ -4,7 +4,8 @@ import 'dart:math';
 import 'dart:ui';
 
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart' hide NotificationVisibility;
+import 'package:flutter_local_notifications/flutter_local_notifications.dart'
+    hide NotificationVisibility;
 import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
 
@@ -34,7 +35,8 @@ class ForegroundMonitorService {
       androidNotificationOptions: AndroidNotificationOptions(
         channelId: 'agro_live_status',
         channelName: 'Live farm status',
-        channelDescription: 'Keeps the selected farm status visible while background monitoring is enabled.',
+        channelDescription:
+            'Keeps the selected farm status visible while background monitoring is enabled.',
         channelImportance: NotificationChannelImportance.LOW,
         priority: NotificationPriority.LOW,
         enableVibration: false,
@@ -61,7 +63,8 @@ class ForegroundMonitorService {
   }
 
   static Future<bool> requestNotificationPermission() async {
-    final permission = await FlutterForegroundTask.checkNotificationPermission();
+    final permission =
+        await FlutterForegroundTask.checkNotificationPermission();
     if (permission == NotificationPermission.granted) return true;
     final result = await FlutterForegroundTask.requestNotificationPermission();
     return result == NotificationPermission.granted;
@@ -94,14 +97,38 @@ class ForegroundMonitorService {
     }
 
     return <String, bool>{
-      ForegroundPreferenceKeys.enabled: value(ForegroundPreferenceKeys.enabled, false),
-      ForegroundPreferenceKeys.showDevice: value(ForegroundPreferenceKeys.showDevice, true),
-      ForegroundPreferenceKeys.showTemperature: value(ForegroundPreferenceKeys.showTemperature, true),
-      ForegroundPreferenceKeys.showHumidity: value(ForegroundPreferenceKeys.showHumidity, true),
-      ForegroundPreferenceKeys.showSoil: value(ForegroundPreferenceKeys.showSoil, true),
-      ForegroundPreferenceKeys.showWater: value(ForegroundPreferenceKeys.showWater, true),
-      ForegroundPreferenceKeys.showMotors: value(ForegroundPreferenceKeys.showMotors, false),
-      ForegroundPreferenceKeys.scheduleAlerts: value(ForegroundPreferenceKeys.scheduleAlerts, true),
+      ForegroundPreferenceKeys.enabled: value(
+        ForegroundPreferenceKeys.enabled,
+        false,
+      ),
+      ForegroundPreferenceKeys.showDevice: value(
+        ForegroundPreferenceKeys.showDevice,
+        true,
+      ),
+      ForegroundPreferenceKeys.showTemperature: value(
+        ForegroundPreferenceKeys.showTemperature,
+        true,
+      ),
+      ForegroundPreferenceKeys.showHumidity: value(
+        ForegroundPreferenceKeys.showHumidity,
+        true,
+      ),
+      ForegroundPreferenceKeys.showSoil: value(
+        ForegroundPreferenceKeys.showSoil,
+        true,
+      ),
+      ForegroundPreferenceKeys.showWater: value(
+        ForegroundPreferenceKeys.showWater,
+        true,
+      ),
+      ForegroundPreferenceKeys.showMotors: value(
+        ForegroundPreferenceKeys.showMotors,
+        false,
+      ),
+      ForegroundPreferenceKeys.scheduleAlerts: value(
+        ForegroundPreferenceKeys.scheduleAlerts,
+        true,
+      ),
     };
   }
 
@@ -144,7 +171,8 @@ void agroForegroundStartCallback() {
 
 class AgroForegroundTaskHandler extends TaskHandler {
   MqttServerClient? _client;
-  StreamSubscription<List<MqttReceivedMessage<MqttMessage>>>? _updatesSubscription;
+  StreamSubscription<List<MqttReceivedMessage<MqttMessage>>>?
+  _updatesSubscription;
   bool _connecting = false;
   bool _mqttConnected = false;
   bool _deviceReportedOnline = false;
@@ -161,7 +189,8 @@ class AgroForegroundTaskHandler extends TaskHandler {
   bool _showMotors = false;
   bool _scheduleAlerts = true;
 
-  final FlutterLocalNotificationsPlugin _localNotifications = FlutterLocalNotificationsPlugin();
+  final FlutterLocalNotificationsPlugin _localNotifications =
+      FlutterLocalNotificationsPlugin();
   bool _localNotificationsReady = false;
 
   @override
@@ -179,7 +208,8 @@ class AgroForegroundTaskHandler extends TaskHandler {
     }
 
     final last = _lastTelemetryAt;
-    if (last != null && DateTime.now().difference(last) > MqttConfig.staleAfter) {
+    if (last != null &&
+        DateTime.now().difference(last) > MqttConfig.staleAfter) {
       _deviceReportedOnline = false;
     }
     unawaited(_updatePersistentNotification(force: false));
@@ -192,12 +222,21 @@ class AgroForegroundTaskHandler extends TaskHandler {
     if (map['type'] != 'preferences') return;
 
     _showDevice = _bool(map[ForegroundPreferenceKeys.showDevice], _showDevice);
-    _showTemperature = _bool(map[ForegroundPreferenceKeys.showTemperature], _showTemperature);
-    _showHumidity = _bool(map[ForegroundPreferenceKeys.showHumidity], _showHumidity);
+    _showTemperature = _bool(
+      map[ForegroundPreferenceKeys.showTemperature],
+      _showTemperature,
+    );
+    _showHumidity = _bool(
+      map[ForegroundPreferenceKeys.showHumidity],
+      _showHumidity,
+    );
     _showSoil = _bool(map[ForegroundPreferenceKeys.showSoil], _showSoil);
     _showWater = _bool(map[ForegroundPreferenceKeys.showWater], _showWater);
     _showMotors = _bool(map[ForegroundPreferenceKeys.showMotors], _showMotors);
-    _scheduleAlerts = _bool(map[ForegroundPreferenceKeys.scheduleAlerts], _scheduleAlerts);
+    _scheduleAlerts = _bool(
+      map[ForegroundPreferenceKeys.scheduleAlerts],
+      _scheduleAlerts,
+    );
     unawaited(_updatePersistentNotification(force: true));
   }
 
@@ -230,7 +269,10 @@ class AgroForegroundTaskHandler extends TaskHandler {
   Future<void> _loadPreferences() async {
     final all = await FlutterForegroundTask.getAllData();
     _showDevice = _bool(all[ForegroundPreferenceKeys.showDevice], true);
-    _showTemperature = _bool(all[ForegroundPreferenceKeys.showTemperature], true);
+    _showTemperature = _bool(
+      all[ForegroundPreferenceKeys.showTemperature],
+      true,
+    );
     _showHumidity = _bool(all[ForegroundPreferenceKeys.showHumidity], true);
     _showSoil = _bool(all[ForegroundPreferenceKeys.showSoil], true);
     _showWater = _bool(all[ForegroundPreferenceKeys.showWater], true);
@@ -330,7 +372,9 @@ class AgroForegroundTaskHandler extends TaskHandler {
       final message = received.payload;
       if (message is! MqttPublishMessage) continue;
 
-      final text = MqttPublishPayload.bytesToStringAsString(message.payload.message);
+      final text = MqttPublishPayload.bytesToStringAsString(
+        message.payload.message,
+      );
       Map<String, dynamic> payload;
       try {
         final decoded = jsonDecode(text);
@@ -373,14 +417,18 @@ class AgroForegroundTaskHandler extends TaskHandler {
 
     final source = (payload['source'] ?? '').toString().toLowerCase();
     final commandId = (payload['commandId'] ?? '').toString().toLowerCase();
-    final isSchedule = source.contains('schedule') || commandId.contains('schedule');
+    final isSchedule =
+        source.contains('schedule') || commandId.contains('schedule');
     if (!isSchedule) return;
 
     final sentAtRaw = payload['sentAt'];
-    final sentAt = sentAtRaw is num ? sentAtRaw.toInt() : int.tryParse('$sentAtRaw');
+    final sentAt = sentAtRaw is num
+        ? sentAtRaw.toInt()
+        : int.tryParse('$sentAtRaw');
     if (sentAt != null) {
       final age = DateTime.now().millisecondsSinceEpoch - sentAt;
-      if (age < -30000 || age > 120000) return; // ignore stale retained commands
+      if (age < -30000 || age > 120000)
+        return; // ignore stale retained commands
     }
 
     final changes = <String>[];
@@ -406,7 +454,8 @@ class AgroForegroundTaskHandler extends TaskHandler {
       android: AndroidNotificationDetails(
         'agro_plan_activity',
         'Plan activity',
-        channelDescription: 'Alerts when a planned motor run starts or finishes.',
+        channelDescription:
+            'Alerts when a planned motor run starts or finishes.',
         importance: Importance.high,
         priority: Priority.high,
         icon: 'ic_stat_agro',
@@ -429,40 +478,43 @@ class AgroForegroundTaskHandler extends TaskHandler {
 
   Future<void> _updatePersistentNotification({required bool force}) async {
     final now = DateTime.now();
-    if (!force && _lastNotificationUpdate != null &&
-        now.difference(_lastNotificationUpdate!) < const Duration(milliseconds: 1500)) {
+    if (!force &&
+        _lastNotificationUpdate != null &&
+        now.difference(_lastNotificationUpdate!) <
+            const Duration(milliseconds: 1500)) {
       return;
     }
     _lastNotificationUpdate = now;
 
-    final online = _mqttConnected &&
+    final online =
+        _mqttConnected &&
         _deviceReportedOnline &&
         _lastTelemetryAt != null &&
         now.difference(_lastTelemetryAt!) < MqttConfig.staleAfter;
 
     final items = <String>[];
-    if (_showDevice) items.add(online ? 'Online' : 'Offline');
+    if (_showDevice) items.add(online ? '🟢 Online' : '🔴 Offline');
     if (_showTemperature) {
       final value = _num(_telemetry['temperature']);
-      if (value != null) items.add('${_format(value)}°C');
+      if (value != null) items.add('🌡 ${_format(value)}°C');
     }
     if (_showHumidity) {
       final value = _num(_telemetry['humidity']);
-      if (value != null) items.add('Humidity ${_format(value)}%');
+      if (value != null) items.add('💧 Humidity ${_format(value)}%');
     }
     if (_showSoil) {
       final value = _num(_telemetry['soil']);
-      if (value != null) items.add('Soil ${_format(value)}%');
+      if (value != null) items.add('🌱 Soil ${_format(value)}%');
     }
     if (_showWater) {
       final value = _num(_telemetry['waterLevel']);
-      if (value != null) items.add('Water ${_format(value)}%');
+      if (value != null) items.add('🚰 Water ${_format(value)}%');
     }
     if (_showMotors) {
       final m1 = _bool(_telemetry['led2'], false) ? 'ON' : 'OFF';
       final m2 = _bool(_telemetry['led3'], false) ? 'ON' : 'OFF';
       final m3 = _bool(_telemetry['led4'], false) ? 'ON' : 'OFF';
-      items.add('M1 $m1  M2 $m2  M3 $m3');
+      items.add('⚙ M1 $m1  M2 $m2  M3 $m3');
     }
 
     String text;
