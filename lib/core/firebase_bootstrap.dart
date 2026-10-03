@@ -17,6 +17,9 @@ class FirebaseBootstrap {
 
   static bool get initialized => _initialized;
   static String? get warning => _warning;
+  static bool get usesDebugAppCheck => kDebugMode || _forceDebugAppCheck;
+  static String get appCheckProvider =>
+      usesDebugAppCheck ? 'debug' : 'play_integrity';
 
   static Future<void> initialize() async {
     if (_initialized) return;
@@ -26,25 +29,41 @@ class FirebaseBootstrap {
         options: DefaultFirebaseOptions.currentPlatform,
       );
       _initialized = true;
-    } catch (error, stack) {
+    } catch (error) {
       _warning = 'Firebase could not initialize.';
-      debugPrint('Firebase initialization failed: $error\n$stack');
+      debugPrint(
+        '[AppCheck] stage=firebase_initialize status=failed '
+        'type=${error.runtimeType}',
+      );
       return;
     }
 
     try {
+      debugPrint(
+        '[AppCheck] provider=$appCheckProvider '
+        'project=${Firebase.app().options.projectId}',
+      );
       await FirebaseAppCheck.instance.activate(
-        providerAndroid: (kReleaseMode && !_forceDebugAppCheck)
-            ? const AndroidPlayIntegrityProvider()
-            : const AndroidDebugProvider(),
+        providerAndroid: usesDebugAppCheck
+            ? const AndroidDebugProvider()
+            : const AndroidPlayIntegrityProvider(),
       );
       await FirebaseAppCheck.instance.setTokenAutoRefreshEnabled(true);
-    } catch (error, stack) {
+      // Activation installs the provider; only a successful request verifies
+      // token exchange. Let the SDK fetch/cache tokens for actual requests.
+      debugPrint(
+        '[AppCheck] provider=$appCheckProvider status=activated '
+        'verification=pending_request',
+      );
+    } catch (error) {
       // Do not block the core farm app if App Check is not configured yet.
       // Firebase Console enforcement should only be enabled after valid traffic
       // is visible for the production signing certificate.
       _warning = 'App protection is not fully configured yet.';
-      debugPrint('Firebase App Check activation failed: $error\n$stack');
+      debugPrint(
+        '[AppCheck] provider=$appCheckProvider '
+        'stage=activate status=failed type=${error.runtimeType}',
+      );
     }
   }
 }

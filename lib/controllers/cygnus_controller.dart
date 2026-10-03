@@ -2,13 +2,13 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:firebase_ai/firebase_ai.dart';
-import 'package:firebase_app_check/firebase_app_check.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 
 import '../ai/plant_ai_service.dart';
 import '../ai/plant_knowledge.dart';
+import '../cygnus/cygnus_diagnostics.dart';
 import '../cygnus/cygnus_models.dart';
+import '../cygnus/immediate_motor_command.dart';
 import '../cygnus/cygnus_session_store.dart';
 import '../cygnus/cygnus_voice_service.dart';
 import '../models/schedule_plan.dart';
@@ -17,13 +17,27 @@ import 'agro_controller.dart';
 import 'plan_controller.dart';
 
 class CygnusController extends ChangeNotifier {
+  static const configuredModel = String.fromEnvironment(
+    'CYGNUS_MODEL',
+    defaultValue: 'gemini-3.8-flash',
+  );
+  static const _requestTimeout = Duration(seconds: 45);
+
+  // firebase_ai 4.0.0's Content.functionResponses uses role='function',
+  // which the current backend rejects. FunctionResponse parts belong in a
+  // user turn; preserve the original parts so call IDs and results survive.
+  @visibleForTesting
+  static Content createToolResponseMessage(
+    Iterable<FunctionResponse> responses,
+  ) => Content.multi(responses);
+
   CygnusController({
     CygnusSessionStore? sessionStore,
     CygnusVoiceService? voiceService,
     PlantAiService? plantAiService,
-  })  : _store = sessionStore ?? CygnusSessionStore(),
-        _voice = voiceService ?? CygnusVoiceService(),
-        _plantAi = plantAiService ?? PlantAiService();
+  }) : _store = sessionStore ?? CygnusSessionStore(),
+       _voice = voiceService ?? CygnusVoiceService(),
+       _plantAi = plantAiService ?? PlantAiService();
 
   final CygnusSessionStore _store;
   final CygnusVoiceService _voice;
@@ -33,6 +47,22 @@ class CygnusController extends ChangeNotifier {
   PlanController? _plan;
   GenerativeModel? _model;
   ChatSession? _chat;
+  Object? _initializationError;
+  StackTrace? _initializationStack;
+  int _requestNumber = 0;
+  String _status = 'Ready';
+  String? _voiceNotice;
+  bool _speaking = false;
+  int _silentTurns = 0;
+  int _voiceRequest = 0;
+  Timer? _voiceRestart;
+  String get status => _status;
+  String? get voiceNotice => _voiceNotice;
+  bool get speaking => _speaking;
+  void _setStatus(String value) {
+    _status = value;
+    if (!_disposed) notifyListeners();
+  }
 
   final List<CygnusMessage> _messages = <CygnusMessage>[];
   final List<CygnusSessionSummary> _sessions = <CygnusSessionSummary>[];
@@ -167,33 +197,38 @@ class CygnusController extends ChangeNotifier {
   Future<void> sendText(String rawText, {bool fromVoice = false}) async {
     final text = rawText.trim();
     if (text.isEmpty || _busy) return;
-    if (_sessionId == null) await newChat();
-
-    final user = _userMessage(text);
-    await _append(user);
-    await _ensureSessionTitle(text);
-
-    // Fast deterministic path for explicit immediate motor commands. This
-    // reduces latency/quota usage and guarantees that a clear request such as
-    // "motor 2 start pannuda" uses the same ACK-verified controller as the
-    // manual Motor screen. Timed/scheduled requests deliberately bypass this
-    // fast path and go through the conversational agent.
-    final fastReply = await _tryFastMotorCommand(text);
-    if (fastReply != null) {
-      await _append(_assistantMessage(fastReply));
-      if (_voiceReply && fromVoice) {
-        await _voice.speak(fastReply, _languageCode);
-      }
-      return;
-    }
-
     _busy = true;
     _error = null;
     notifyListeners();
+    final request = ++_requestNumber;
+    final elapsed = Stopwatch()..start();
+    _setStatus('Preparing…');
+    var farmCommandAttempted = false;
+    debugPrint('[Cygnus] request=$request started model=$configuredModel');
 
     try {
-      await _ensureChat();
-      var response = await _chat!.sendMessage(Content.text(text));
+      if (_sessionId == null) await newChat();
+      // Rebuild before appending this turn so it is not sent twice as history.
+      final immediate = ImmediateMotorCommand.parse(text);
+      if (immediate == null) await _ensureChat();
+      await _append(_userMessage(text));
+      await _ensureSessionTitle(text);
+      if (immediate != null) {
+        farmCommandAttempted = true;
+        _setStatus('Waiting for device confirmation…');
+        final result = immediate.motor == null
+            ? await _setAllMotors(immediate.enabled)
+            : await _setMotor(immediate.motor!, immediate.enabled);
+        final reply =
+            result['message']?.toString() ?? 'Device confirmation unavailable.';
+        await _append(_assistantMessage(reply));
+        // Rebuild from the completed local turn for pronouns/context next time.
+        _chat = null;
+        if (fromVoice) await _speakReply(reply);
+        return;
+      }
+      _setStatus('Thinking…');
+      var response = await _sendAi(Content.text(text), elapsed);
 
       for (var round = 0; round < 6; round++) {
         final calls = response.functionCalls.toList(growable: false);
@@ -201,39 +236,75 @@ class CygnusController extends ChangeNotifier {
 
         final functionResponses = <FunctionResponse>[];
         for (final call in calls) {
+          if (const <String>{
+            'set_motor',
+            'set_all_motors',
+            'set_schedule_enabled',
+            'confirm_pending_action',
+          }.contains(call.name)) {
+            farmCommandAttempted = true;
+          }
+          _setStatus(
+            farmCommandAttempted
+                ? 'Waiting for device confirmation…'
+                : 'Reading farm data…',
+          );
           final result = await _executeTool(call.name, call.args);
           functionResponses.add(
             FunctionResponse(call.name, result, id: call.id),
           );
         }
-        response = await _chat!.sendMessage(
-          Content.functionResponses(functionResponses),
+        _setStatus('Preparing reply…');
+        response = await _sendAi(
+          createToolResponseMessage(functionResponses),
+          elapsed,
         );
       }
 
-      var reply = response.text?.trim() ?? '';
+      if (response.functionCalls.isNotEmpty) {
+        throw const CygnusDiagnostic(
+          'tool_round_limit',
+          'Cygnus reached its action limit before completing the response. '
+              'No remaining actions were executed.',
+        );
+      }
+      final reply = response.text?.trim() ?? '';
       if (reply.isEmpty) {
-        reply = 'Done.';
+        throw const CygnusDiagnostic(
+          'empty_response',
+          'Cygnus received no answer from the AI service. It cannot confirm '
+              'that this request is complete.',
+        );
       }
       final assistant = _assistantMessage(reply);
       await _append(assistant);
+      debugPrint(
+        '[Cygnus] request=$request completed elapsed_ms=${elapsed.elapsedMilliseconds}',
+      );
 
-      if (_voiceReply && fromVoice) {
-        await _voice.speak(reply, _languageCode);
+      if (fromVoice) await _speakReply(reply);
+    } catch (error) {
+      final diagnostic = CygnusDiagnostic.fromError(error);
+      debugPrint('[Cygnus] request=$request failed code=${diagnostic.code}');
+      // A timeout does not cancel the SDK future. Discard this chat so its
+      // eventual result cannot alter the history used for the next request.
+      // Never retry tool calls automatically; some may already have executed.
+      _chat = null;
+      _error = diagnostic.message;
+      if (farmCommandAttempted) {
+        _error =
+            '${_error!} A farm command was attempted. Check its current '
+            'state before repeating the request.';
       }
-    } catch (error, stack) {
-      debugPrint('Cygnus request failed: $error\n$stack');
-      _error = _friendlyAiError(error);
       final assistant = _assistantMessage(_error!);
       await _append(assistant);
     } finally {
       _busy = false;
       notifyListeners();
-      if (fromVoice && _voiceConversation && mountedSafe) {
-        unawaited(Future<void>.delayed(const Duration(milliseconds: 350), () async {
-          if (_voiceConversation && !_busy) await startVoiceInput(keepConversation: true);
-        }));
-      }
+      _status = 'Ready';
+      if (_error != null) _voiceConversation = false;
+      if (fromVoice && _voiceConversation && mountedSafe) _queueVoiceTurn();
+      if (!_disposed) notifyListeners();
     }
   }
 
@@ -285,16 +356,10 @@ class CygnusController extends ChangeNotifier {
       );
       await _append(resultMessage);
 
-      // Inform the chat model using text only; the raw image stays on-device.
-      await _ensureChat();
-      final contextText = 'Local leaf scan result: crop=${advice.crop}, '
-          'condition=${advice.condition}, confidence=${(prediction.confidence * 100).toStringAsFixed(1)}%. '
-          'Symptoms=${advice.symptoms.join('; ')}. '
-          'Treatment=${advice.treatment.join('; ')}. '
-          'Prevention=${advice.prevention.join('; ')}.';
-      await _chat!.sendMessage(Content.text(contextText));
+      _chat = null; // Latest scan is available through get_last_leaf_result.
     } catch (error) {
-      _error = 'I couldn’t analyze that leaf. Try a clear photo with one leaf centered.';
+      _error =
+          'I couldn’t analyze that leaf. Try a clear photo with one leaf centered.';
       await _append(_assistantMessage(_error!));
     } finally {
       _busy = false;
@@ -302,57 +367,113 @@ class CygnusController extends ChangeNotifier {
     }
   }
 
-  Future<void> startVoiceInput({bool keepConversation = false}) async {
-    if (_busy || _listening || _disposed) return;
-    if (!keepConversation) _voiceConversation = false;
-    await _voice.stopSpeaking();
-    _voiceDraft = '';
-    _listening = true;
-    notifyListeners();
+  Future<GenerateContentResponse> _sendAi(Content content, Stopwatch elapsed) {
+    final remaining = _requestTimeout - elapsed.elapsed;
+    if (remaining <= Duration.zero)
+      throw TimeoutException('AI request deadline');
+    return _chat!.sendMessage(content).timeout(remaining);
+  }
 
-    await _voice.startListening(
-      languageCode: _languageCode,
-      onPartial: (text) {
-        _voiceDraft = text;
-        notifyListeners();
-      },
-      onFinal: (text) async {
-        _voiceDraft = text;
-        _listening = false;
-        notifyListeners();
-        await sendText(text, fromVoice: true);
-      },
-    );
-
-    // If recognition never started, reflect the real state.
-    if (!_voice.listening && _voiceDraft.isEmpty) {
-      _listening = false;
-      if (keepConversation) _voiceConversation = false;
-      notifyListeners();
+  Future<void> _speakReply(String text) async {
+    if (!_voiceReply || _disposed) return;
+    _speaking = true;
+    _setStatus('Speaking…');
+    try {
+      await _voice.speak(text, _languageCode);
+    } catch (_) {
+      _voiceNotice =
+          'Reply is ready. Audio playback failed; check the phone’s voice engine.';
+      debugPrint('[CygnusVoice] playback_failed');
+    } finally {
+      _speaking = false;
+      if (!_disposed) notifyListeners();
     }
   }
 
-  Future<void> stopVoiceInput() async {
-    _voiceConversation = false;
-    await _voice.stopListening();
-    _listening = false;
-    notifyListeners();
+  void _queueVoiceTurn() {
+    _voiceRestart?.cancel();
+    _voiceRestart = Timer(const Duration(milliseconds: 700), () {
+      if (!_disposed && _voiceConversation && !_busy && !_listening) {
+        unawaited(startVoiceInput(keepConversation: true));
+      }
+    });
   }
+
+  Future<void> startVoiceInput({bool keepConversation = false}) async {
+    if (_busy || _listening || _disposed) return;
+    final voiceRequest = ++_voiceRequest;
+    _voiceRestart?.cancel();
+    if (!keepConversation) {
+      _voiceConversation = false;
+      _silentTurns = 0;
+    }
+    _voiceNotice = null;
+    _voiceDraft = '';
+    _listening = true;
+    _setStatus('Starting microphone…');
+    await _voice.stopSpeaking();
+    if (_disposed || voiceRequest != _voiceRequest) return;
+    await _voice.startListening(
+      languageCode: _languageCode,
+      onListening: (value) {
+        if (_disposed || voiceRequest != _voiceRequest) return;
+        _listening = value;
+        if (value) _status = 'Listening…';
+        notifyListeners();
+      },
+      onPartial: (text) {
+        if (_disposed || voiceRequest != _voiceRequest) return;
+        _voiceDraft = text;
+        notifyListeners();
+      },
+      onFinal: (text) {
+        if (_disposed || voiceRequest != _voiceRequest) return;
+        _silentTurns = 0;
+        _voiceDraft = '';
+        _listening = false;
+        notifyListeners();
+        unawaited(sendText(text, fromVoice: true));
+      },
+      onEnded: (message) {
+        if (_disposed || voiceRequest != _voiceRequest) return;
+        _listening = false;
+        _voiceDraft = '';
+        if (message == null && _voiceConversation && ++_silentTurns <= 2) {
+          _status = 'Listening again…';
+          _queueVoiceTurn();
+        } else {
+          _voiceConversation = false;
+          _status = 'Ready';
+          _voiceNotice =
+              message ??
+              'No speech detected. Tap the mic and speak after it starts. Select Tamil for Tamil speech.';
+        }
+        notifyListeners();
+      },
+    );
+  }
+
+  Future<void> stopVoiceInput() => stopVoiceConversation();
 
   Future<void> startVoiceConversation() async {
     if (_disposed || _busy) return;
+    _silentTurns = 0;
     _voiceConversation = true;
+    _voiceReply = true;
     notifyListeners();
     await startVoiceInput(keepConversation: true);
   }
 
   Future<void> stopVoiceConversation() async {
+    ++_voiceRequest;
+    _voiceRestart?.cancel();
     _voiceConversation = false;
-    await _voice.stopListening();
-    await _voice.stopSpeaking();
     _listening = false;
     _voiceDraft = '';
-    notifyListeners();
+    _status = 'Ready';
+    await _voice.cancelListening();
+    await _voice.stopSpeaking();
+    if (!_disposed) notifyListeners();
   }
 
   Future<void> confirmPendingAction() async {
@@ -395,23 +516,22 @@ class CygnusController extends ChangeNotifier {
     if (_chat != null) return;
     await _rebuildChat();
     if (_chat == null) {
+      final cause = _initializationError;
+      if (cause != null) {
+        Error.throwWithStackTrace(
+          cause,
+          _initializationStack ?? StackTrace.current,
+        );
+      }
       throw StateError('Cygnus AI session is unavailable.');
     }
   }
 
   Future<void> _rebuildChat() async {
     try {
-      _model = FirebaseAI.googleAI(
-        appCheck: FirebaseAppCheck.instance,
-        auth: FirebaseAuth.instance,
-      ).generativeModel(
-        model: const String.fromEnvironment(
-          'CYGNUS_MODEL',
-          defaultValue: 'gemini-3.8-flash',
-        ),
-        tools: <Tool>[
-          Tool.functionDeclarations(_toolDeclarations()),
-        ],
+      _model = FirebaseAI.googleAI().generativeModel(
+        model: configuredModel,
+        tools: <Tool>[Tool.functionDeclarations(_toolDeclarations())],
         toolConfig: ToolConfig(
           functionCallingConfig: FunctionCallingConfig.auto(),
         ),
@@ -423,9 +543,10 @@ class CygnusController extends ChangeNotifier {
       );
 
       final historyMessages = _messages
-          .where((m) =>
-              m.kind == 'text' &&
-              (m.role == 'user' || m.role == 'assistant'))
+          .where(
+            (m) =>
+                m.kind == 'text' && (m.role == 'user' || m.role == 'assistant'),
+          )
           .toList();
       final recent = historyMessages.length > 18
           ? historyMessages.sublist(historyMessages.length - 18)
@@ -459,11 +580,17 @@ class CygnusController extends ChangeNotifier {
       flushBuffered();
 
       _chat = _model!.startChat(history: history);
+      _initializationError = null;
+      _initializationStack = null;
+      debugPrint('[Cygnus] session_ready model=$configuredModel');
     } catch (error, stack) {
       _model = null;
       _chat = null;
-      _error = 'Cygnus is not available yet. Your farm controls still work normally.';
-      debugPrint('Cygnus model initialization failed: $error\n$stack');
+      _initializationError = error;
+      _initializationStack = stack;
+      final diagnostic = CygnusDiagnostic.fromError(error);
+      _error = diagnostic.message;
+      debugPrint('[Cygnus] initialization_failed code=${diagnostic.code}');
     }
   }
 
@@ -473,6 +600,7 @@ You are Cygnus, the built-in intelligent farm assistant for AGRO CONNECT.
 Talk naturally and briefly. The user commonly speaks Tamil, Tanglish, English, Hindi, Malayalam or Kannada. Reply in the user's language/style unless they ask for another language. Current preferred language code: $_languageCode.
 
 You can read live farm state and operate only through the provided tools. Never invent temperature, humidity, soil, water, motor states, schedule data, or execution results. Use tools whenever live/current/app-specific information is requested.
+If a status tool reports dataStatus=unavailable, explain that no farm reading has arrived. If dataStatus=stale, describe values only as the last known readings with their time; never present them as current. An offline device cannot provide a confirmed current temperature.
 
 Motor mapping:
 - Motor 1 = green indicator / led2
@@ -481,6 +609,7 @@ Motor mapping:
 The soil-moisture irrigation relay is automatic and separate. Never claim Cygnus manually controls the automatic soil relay.
 
 Immediate motor commands: if the user clearly asks to turn a specific motor on/off now (for example "motor 2 start pannuda"), call set_motor immediately. Do not ask for confirmation for clear immediate motor commands. If motor identity or action is missing, ask one short clarification.
+Questions about whether a motor is on/off, quoted examples, hypothetical commands, and negated commands are not authorization to operate a motor. Never call a mutating tool for those messages. Do not treat a failed or incomplete response as successful execution, and do not automatically repeat a motor or schedule mutation.
 
 Schedules: for any new schedule, collect motor, date, time, duration and repeat rule. If the user uses relative dates/times such as today/tomorrow/morning/evening, call get_current_context before resolving them. When all fields are available, call prepare_schedule. A prepared schedule is not active until the user confirms the in-chat confirmation card. Do not claim it is saved before confirmation.
 
@@ -505,7 +634,9 @@ You may navigate the app using open_page when the user asks to open a page.
         'get_current_status',
         'Get current live farm telemetry and motor states. Set live=true when user wants a continuously updating status card.',
         parameters: <String, Schema>{
-          'live': Schema.boolean(description: 'Whether to show a live updating status card.'),
+          'live': Schema.boolean(
+            description: 'Whether to show a live updating status card.',
+          ),
         },
         optionalParameters: const <String>['live'],
       ),
@@ -513,8 +644,12 @@ You may navigate the app using open_page when the user asks to open a page.
         'get_metric_trend',
         'Get recent trend data for temperature, humidity, soil, or water.',
         parameters: <String, Schema>{
-          'metric': Schema.string(description: 'temperature, humidity, soil, or water'),
-          'minutes': Schema.integer(description: 'How many recent minutes to inspect.'),
+          'metric': Schema.string(
+            description: 'temperature, humidity, soil, or water',
+          ),
+          'minutes': Schema.integer(
+            description: 'How many recent minutes to inspect.',
+          ),
         },
         optionalParameters: const <String>['minutes'],
       ),
@@ -537,7 +672,9 @@ You may navigate the app using open_page when the user asks to open a page.
         'list_schedules',
         'List saved motor schedules, optionally for a single motor.',
         parameters: <String, Schema>{
-          'motor': Schema.integer(description: 'Optional motor number 1, 2 or 3.'),
+          'motor': Schema.integer(
+            description: 'Optional motor number 1, 2 or 3.',
+          ),
         },
         optionalParameters: const <String>['motor'],
       ),
@@ -548,14 +685,20 @@ You may navigate the app using open_page when the user asks to open a page.
           'motor': Schema.integer(description: 'Motor number 1, 2 or 3.'),
           'date': Schema.string(description: 'Start date in YYYY-MM-DD.'),
           'time': Schema.string(description: 'Start time in 24-hour HH:mm:ss.'),
-          'durationSec': Schema.integer(description: 'Run duration in seconds.'),
+          'durationSec': Schema.integer(
+            description: 'Run duration in seconds.',
+          ),
           'repeat': Schema.string(description: 'once, daily, or weekly'),
           'weekdays': Schema.array(
             description: 'For weekly repeat only. Sunday=0 through Saturday=6.',
             items: Schema.integer(),
           ),
-          'endDate': Schema.string(description: 'Optional recurrence end date YYYY-MM-DD.'),
-          'title': Schema.string(description: 'Short user-friendly plan title.'),
+          'endDate': Schema.string(
+            description: 'Optional recurrence end date YYYY-MM-DD.',
+          ),
+          'title': Schema.string(
+            description: 'Short user-friendly plan title.',
+          ),
         },
         optionalParameters: const <String>['weekdays', 'endDate', 'title'],
       ),
@@ -565,16 +708,30 @@ You may navigate the app using open_page when the user asks to open a page.
         parameters: <String, Schema>{
           'scheduleId': Schema.string(description: 'Existing schedule ID.'),
           'title': Schema.string(description: 'Optional new title.'),
-          'motor': Schema.integer(description: 'Optional new motor number 1, 2 or 3.'),
-          'date': Schema.string(description: 'Optional new start date YYYY-MM-DD.'),
-          'time': Schema.string(description: 'Optional new start time HH:mm:ss.'),
-          'durationSec': Schema.integer(description: 'Optional new run duration in seconds.'),
-          'repeat': Schema.string(description: 'Optional repeat: once, daily, or weekly.'),
+          'motor': Schema.integer(
+            description: 'Optional new motor number 1, 2 or 3.',
+          ),
+          'date': Schema.string(
+            description: 'Optional new start date YYYY-MM-DD.',
+          ),
+          'time': Schema.string(
+            description: 'Optional new start time HH:mm:ss.',
+          ),
+          'durationSec': Schema.integer(
+            description: 'Optional new run duration in seconds.',
+          ),
+          'repeat': Schema.string(
+            description: 'Optional repeat: once, daily, or weekly.',
+          ),
           'weekdays': Schema.array(
-            description: 'Optional weekdays for weekly repeat. Sunday=0 through Saturday=6.',
+            description:
+                'Optional weekdays for weekly repeat. Sunday=0 through Saturday=6.',
             items: Schema.integer(),
           ),
-          'endDate': Schema.string(description: 'Optional recurrence end date YYYY-MM-DD. Empty string clears it.'),
+          'endDate': Schema.string(
+            description:
+                'Optional recurrence end date YYYY-MM-DD. Empty string clears it.',
+          ),
           'enabled': Schema.boolean(description: 'Optional enabled state.'),
         },
         optionalParameters: const <String>[
@@ -604,7 +761,9 @@ You may navigate the app using open_page when the user asks to open a page.
         'Enable or disable an existing schedule by ID.',
         parameters: <String, Schema>{
           'scheduleId': Schema.string(description: 'Schedule ID.'),
-          'enabled': Schema.boolean(description: 'true to enable, false to disable.'),
+          'enabled': Schema.boolean(
+            description: 'true to enable, false to disable.',
+          ),
         },
       ),
       FunctionDeclaration(
@@ -624,7 +783,8 @@ You may navigate the app using open_page when the user asks to open a page.
         'Open an AGRO CONNECT page.',
         parameters: <String, Schema>{
           'page': Schema.string(
-            description: 'home, motors, plans, monitor, history, plant_health, cygnus, or settings',
+            description:
+                'home, motors, plans, monitor, history, plant_health, cygnus, or settings',
           ),
         },
       ),
@@ -657,7 +817,11 @@ You may navigate the app using open_page when the user asks to open a page.
         return _prepareUpdateSchedule(args);
       case 'confirm_pending_action':
         final action = _pendingAction;
-        if (action == null) return <String, Object?>{'ok': false, 'message': 'There is nothing waiting for confirmation.'};
+        if (action == null)
+          return <String, Object?>{
+            'ok': false,
+            'message': 'There is nothing waiting for confirmation.',
+          };
         final result = await _executePending(action);
         _pendingAction = null;
         notifyListeners();
@@ -665,26 +829,40 @@ You may navigate the app using open_page when the user asks to open a page.
       case 'cancel_pending_action':
         _pendingAction = null;
         notifyListeners();
-        return <String, Object?>{'ok': true, 'message': 'Pending action cancelled.'};
+        return <String, Object?>{
+          'ok': true,
+          'message': 'Pending action cancelled.',
+        };
       case 'set_schedule_enabled':
-        return _setScheduleEnabled(args['scheduleId']?.toString() ?? '', args['enabled'] == true);
+        return _setScheduleEnabled(
+          args['scheduleId']?.toString() ?? '',
+          args['enabled'] == true,
+        );
       case 'prepare_delete_schedule':
         return _prepareDeleteSchedule(args['scheduleId']?.toString() ?? '');
       case 'get_last_leaf_result':
         return _lastLeafResult == null
-            ? <String, Object?>{'ok': false, 'message': 'No leaf has been scanned in this chat yet.'}
+            ? <String, Object?>{
+                'ok': false,
+                'message': 'No leaf has been scanned in this chat yet.',
+              }
             : <String, Object?>{'ok': true, ..._jsonSafeMap(_lastLeafResult!)};
       case 'open_page':
         final page = args['page']?.toString() ?? 'home';
         navigationHandler?.call(page);
         return <String, Object?>{'ok': true, 'page': page};
       default:
-        return <String, Object?>{'ok': false, 'message': 'Unsupported action: $name'};
+        return <String, Object?>{
+          'ok': false,
+          'message': 'Unsupported action: $name',
+        };
     }
   }
 
   Map<String, Object?> _currentContext() {
-    final nowIst = DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30));
+    final nowIst = DateTime.now().toUtc().add(
+      const Duration(hours: 5, minutes: 30),
+    );
     return <String, Object?>{
       'ok': true,
       'timezone': 'Asia/Kolkata',
@@ -697,11 +875,29 @@ You may navigate the app using open_page when the user asks to open a page.
 
   Map<String, Object?> _currentStatus({required bool live}) {
     final agro = _agro;
-    if (agro == null) return <String, Object?>{'ok': false, 'message': 'Farm controller is not ready.'};
+    if (agro == null)
+      return <String, Object?>{
+        'ok': false,
+        'message': 'Farm controller is not ready.',
+      };
     final t = agro.telemetry;
+    final lastSeen = agro.lastSeen;
+    if (lastSeen == null) {
+      return <String, Object?>{
+        'ok': false,
+        'deviceOnline': false,
+        'dataStatus': 'unavailable',
+        'message':
+            'No farm telemetry has arrived yet. Current readings are unavailable.',
+      };
+    }
     final result = <String, Object?>{
       'ok': true,
       'deviceOnline': agro.deviceOnline,
+      'dataStatus': agro.deviceOnline ? 'current' : 'stale',
+      if (!agro.deviceOnline)
+        'message':
+            'The farm device is offline. These are last known readings, not current values.',
       'temperatureC': t.temperature,
       'humidityPercent': t.humidity,
       'soilPercent': t.soil,
@@ -710,50 +906,72 @@ You may navigate the app using open_page when the user asks to open a page.
       'motor1': agro.controls.actual2,
       'motor2': agro.controls.actual3,
       'motor3': agro.controls.actual4,
-      'lastSeen': agro.lastSeen?.toIso8601String(),
+      'lastSeen': lastSeen.toIso8601String(),
+      'ageSeconds': agro.packetAge?.inSeconds,
     };
 
     if (live) {
-      unawaited(_append(CygnusMessage(
-        id: _id('msg'),
-        role: 'assistant',
-        text: 'Live farm status',
-        kind: 'live_status',
-        payload: const <String, dynamic>{'live': true},
-        createdAt: DateTime.now(),
-      )));
+      unawaited(
+        _append(
+          CygnusMessage(
+            id: _id('msg'),
+            role: 'assistant',
+            text: 'Live farm status',
+            kind: 'live_status',
+            payload: const <String, dynamic>{'live': true},
+            createdAt: DateTime.now(),
+          ),
+        ),
+      );
     }
     return result;
   }
 
   Map<String, Object?> _metricTrend(String rawMetric, int minutes) {
     final agro = _agro;
-    if (agro == null) return <String, Object?>{'ok': false, 'message': 'Farm controller is not ready.'};
+    if (agro == null)
+      return <String, Object?>{
+        'ok': false,
+        'message': 'Farm controller is not ready.',
+      };
     final metric = rawMetric.toLowerCase();
     final safeMinutes = minutes.clamp(1, 1440);
     final since = DateTime.now().subtract(Duration(minutes: safeMinutes));
-    final source = agro.history.where((e) => e.receivedAt.isAfter(since)).toList();
+    final source = agro.history
+        .where((e) => e.receivedAt.isAfter(since))
+        .toList();
     final sampled = _sampleTelemetry(source, 40);
-    final points = sampled.map((t) => <String, Object?>{
-          'time': t.receivedAt.millisecondsSinceEpoch,
-          'value': _metricValue(t, metric),
-        }).toList(growable: false);
+    final points = sampled
+        .map(
+          (t) => <String, Object?>{
+            'time': t.receivedAt.millisecondsSinceEpoch,
+            'value': _metricValue(t, metric),
+          },
+        )
+        .toList(growable: false);
 
-    unawaited(_append(CygnusMessage(
-      id: _id('msg'),
-      role: 'assistant',
-      text: '${_metricLabel(metric)} trend',
-      kind: 'trend',
-      payload: <String, dynamic>{
-        'metric': metric,
-        'minutes': safeMinutes,
-        'points': points,
-      },
-      createdAt: DateTime.now(),
-    )));
+    unawaited(
+      _append(
+        CygnusMessage(
+          id: _id('msg'),
+          role: 'assistant',
+          text: '${_metricLabel(metric)} trend',
+          kind: 'trend',
+          payload: <String, dynamic>{
+            'metric': metric,
+            'minutes': safeMinutes,
+            'points': points,
+          },
+          createdAt: DateTime.now(),
+        ),
+      ),
+    );
 
     if (points.isEmpty) {
-      return <String, Object?>{'ok': false, 'message': 'No recent history is available for that metric.'};
+      return <String, Object?>{
+        'ok': false,
+        'message': 'No recent history is available for that metric.',
+      };
     }
     final values = points.map((e) => (e['value'] as num).toDouble()).toList();
     final min = values.reduce((a, b) => a < b ? a : b);
@@ -773,12 +991,29 @@ You may navigate the app using open_page when the user asks to open a page.
 
   Future<Map<String, Object?>> _setMotor(int motor, bool state) async {
     final agro = _agro;
-    if (agro == null) return <String, Object?>{'ok': false, 'message': 'Farm controller is not ready.'};
-    if (motor < 1 || motor > 3) return <String, Object?>{'ok': false, 'message': 'Motor must be 1, 2 or 3.'};
-    if (!agro.deviceOnline) return <String, Object?>{'ok': false, 'message': 'Farm device is offline.'};
+    if (agro == null)
+      return <String, Object?>{
+        'ok': false,
+        'message': 'Farm controller is not ready.',
+      };
+    if (motor < 1 || motor > 3)
+      return <String, Object?>{
+        'ok': false,
+        'message': 'Motor must be 1, 2 or 3.',
+      };
+    if (!agro.deviceOnline)
+      return <String, Object?>{
+        'ok': false,
+        'message': 'Farm device is offline.',
+      };
 
-    await agro.setMotor(motor, state);
-    final confirmed = await _waitForMotor(motor, state);
+    final commandId = await agro.setMotor(motor, state);
+    if (commandId == null)
+      return <String, Object?>{
+        'ok': false,
+        'message': agro.error ?? 'The command could not be sent.',
+      };
+    final confirmed = await _waitForMotor(motor, state, commandId);
     return <String, Object?>{
       'ok': confirmed,
       'motor': motor,
@@ -809,24 +1044,34 @@ You may navigate the app using open_page when the user asks to open a page.
 
   Map<String, Object?> _listSchedules(int? motor) {
     final plan = _plan;
-    if (plan == null) return <String, Object?>{'ok': false, 'message': 'Plans are not ready.'};
+    if (plan == null)
+      return <String, Object?>{'ok': false, 'message': 'Plans are not ready.'};
     final list = motor == null
         ? plan.plans
         : plan.plans.where((item) => item.motor == motor).toList();
-    final schedules = list.take(30).map((item) => <String, Object?>{
-          'id': item.id,
-          'title': item.title,
-          'motor': item.motor,
-          'date': item.date,
-          'time': item.time,
-          'durationSec': item.durationSec,
-          'repeat': item.repeat,
-          'weekdays': item.weekdays,
-          'endDate': item.endDate,
-          'enabled': item.enabled,
-          'nextRunAt': item.nextRunAt,
-        }).toList(growable: false);
-    return <String, Object?>{'ok': true, 'count': schedules.length, 'schedules': schedules};
+    final schedules = list
+        .take(30)
+        .map(
+          (item) => <String, Object?>{
+            'id': item.id,
+            'title': item.title,
+            'motor': item.motor,
+            'date': item.date,
+            'time': item.time,
+            'durationSec': item.durationSec,
+            'repeat': item.repeat,
+            'weekdays': item.weekdays,
+            'endDate': item.endDate,
+            'enabled': item.enabled,
+            'nextRunAt': item.nextRunAt,
+          },
+        )
+        .toList(growable: false);
+    return <String, Object?>{
+      'ok': true,
+      'count': schedules.length,
+      'schedules': schedules,
+    };
   }
 
   Map<String, Object?> _prepareSchedule(Map<String, Object?> args) {
@@ -837,10 +1082,10 @@ You may navigate the app using open_page when the user asks to open a page.
     final repeat = args['repeat']?.toString().toLowerCase() ?? 'once';
     final weekdays = (args['weekdays'] is List)
         ? (args['weekdays'] as List)
-            .map(_asInt)
-            .whereType<int>()
-            .where((e) => e >= 0 && e <= 6)
-            .toList(growable: false)
+              .map(_asInt)
+              .whereType<int>()
+              .where((e) => e >= 0 && e <= 6)
+              .toList(growable: false)
         : <int>[];
     final endDate = args['endDate']?.toString();
     final title = args['title']?.toString().trim();
@@ -862,7 +1107,8 @@ You may navigate the app using open_page when the user asks to open a page.
       id: _id('pending'),
       type: 'create_schedule',
       title: title?.isNotEmpty == true ? title! : 'Motor $motor plan',
-      details: 'Motor $motor · ${SchedulePlan.to12Hour(time)} · ${_durationLabel(duration)} · ${_repeatLabel(repeat, weekdays)}',
+      details:
+          'Motor $motor · ${SchedulePlan.to12Hour(time)} · ${_durationLabel(duration)} · ${_repeatLabel(repeat, weekdays)}',
       arguments: <String, dynamic>{
         'title': title?.isNotEmpty == true ? title : 'Motor $motor plan',
         'motor': motor,
@@ -875,18 +1121,22 @@ You may navigate the app using open_page when the user asks to open a page.
       },
     );
     _pendingAction = action;
-    unawaited(_append(CygnusMessage(
-      id: _id('msg'),
-      role: 'assistant',
-      text: 'Ready to create this plan.',
-      kind: 'confirmation',
-      payload: <String, dynamic>{
-        'pendingId': action.id,
-        'title': action.title,
-        'details': action.details,
-      },
-      createdAt: DateTime.now(),
-    )));
+    unawaited(
+      _append(
+        CygnusMessage(
+          id: _id('msg'),
+          role: 'assistant',
+          text: 'Ready to create this plan.',
+          kind: 'confirmation',
+          payload: <String, dynamic>{
+            'pendingId': action.id,
+            'title': action.title,
+            'details': action.details,
+          },
+          createdAt: DateTime.now(),
+        ),
+      ),
+    );
     notifyListeners();
     return <String, Object?>{
       'ok': true,
@@ -909,7 +1159,9 @@ You may navigate the app using open_page when the user asks to open a page.
     }
     final current = matches.first;
     final motor = _asInt(args['motor']) ?? current.motor;
-    final date = args.containsKey('date') ? args['date']?.toString() ?? '' : current.date;
+    final date = args.containsKey('date')
+        ? args['date']?.toString() ?? ''
+        : current.date;
     final time = args.containsKey('time')
         ? SchedulePlan.normalizeTime(args['time']?.toString() ?? '')
         : current.time;
@@ -919,20 +1171,22 @@ You may navigate the app using open_page when the user asks to open a page.
         : current.repeat;
     final weekdays = args['weekdays'] is List
         ? (args['weekdays'] as List)
-            .map(_asInt)
-            .whereType<int>()
-            .where((e) => e >= 0 && e <= 6)
-            .toList(growable: false)
+              .map(_asInt)
+              .whereType<int>()
+              .where((e) => e >= 0 && e <= 6)
+              .toList(growable: false)
         : current.weekdays;
     final endDate = args.containsKey('endDate')
         ? (args['endDate']?.toString().trim().isNotEmpty == true
-            ? args['endDate'].toString().trim()
-            : null)
+              ? args['endDate'].toString().trim()
+              : null)
         : current.endDate;
     final title = args['title']?.toString().trim().isNotEmpty == true
         ? args['title'].toString().trim()
         : current.title;
-    final enabled = args.containsKey('enabled') ? args['enabled'] == true : current.enabled;
+    final enabled = args.containsKey('enabled')
+        ? args['enabled'] == true
+        : current.enabled;
 
     final validation = _validateSchedule(
       motor: motor,
@@ -951,7 +1205,8 @@ You may navigate the app using open_page when the user asks to open a page.
       id: _id('pending'),
       type: 'update_schedule',
       title: 'Update $title',
-      details: 'Motor $motor · ${SchedulePlan.to12Hour(time)} · ${_durationLabel(duration)} · ${_repeatLabel(repeat, weekdays)}',
+      details:
+          'Motor $motor · ${SchedulePlan.to12Hour(time)} · ${_durationLabel(duration)} · ${_repeatLabel(repeat, weekdays)}',
       arguments: <String, dynamic>{
         'scheduleId': current.id,
         'title': title,
@@ -966,55 +1221,67 @@ You may navigate the app using open_page when the user asks to open a page.
       },
     );
     _pendingAction = action;
-    unawaited(_append(CygnusMessage(
-      id: _id('msg'),
-      role: 'assistant',
-      text: 'Ready to update this plan.',
-      kind: 'confirmation',
-      payload: <String, dynamic>{
-        'pendingId': action.id,
-        'title': action.title,
-        'details': action.details,
-      },
-      createdAt: DateTime.now(),
-    )));
+    unawaited(
+      _append(
+        CygnusMessage(
+          id: _id('msg'),
+          role: 'assistant',
+          text: 'Ready to update this plan.',
+          kind: 'confirmation',
+          payload: <String, dynamic>{
+            'pendingId': action.id,
+            'title': action.title,
+            'details': action.details,
+          },
+          createdAt: DateTime.now(),
+        ),
+      ),
+    );
     notifyListeners();
     return <String, Object?>{
       'ok': true,
       'requiresConfirmation': true,
       'pendingId': action.id,
       'summary': action.details,
-      'message': 'The schedule update is prepared and waiting for user confirmation.',
+      'message':
+          'The schedule update is prepared and waiting for user confirmation.',
     };
   }
 
   Map<String, Object?> _prepareDeleteSchedule(String scheduleId) {
     final plan = _plan;
-    if (plan == null) return <String, Object?>{'ok': false, 'message': 'Plans are not ready.'};
+    if (plan == null)
+      return <String, Object?>{'ok': false, 'message': 'Plans are not ready.'};
     final matches = plan.plans.where((item) => item.id == scheduleId);
-    if (matches.isEmpty) return <String, Object?>{'ok': false, 'message': 'Schedule not found.'};
+    if (matches.isEmpty)
+      return <String, Object?>{'ok': false, 'message': 'Schedule not found.'};
     final item = matches.first;
     final action = PendingCygnusAction(
       id: _id('pending'),
       type: 'delete_schedule',
       title: 'Delete ${item.title}',
-      details: 'Motor ${item.motor} · ${item.displayTime} · ${item.repeatLabel}',
+      details:
+          'Motor ${item.motor} · ${item.displayTime} · ${item.repeatLabel}',
       arguments: <String, dynamic>{'scheduleId': item.id},
     );
     _pendingAction = action;
-    unawaited(_append(CygnusMessage(
-      id: _id('msg'),
-      role: 'assistant',
-      text: 'Confirm schedule deletion.',
-      kind: 'confirmation',
-      payload: <String, dynamic>{
-        'pendingId': action.id,
-        'title': action.title,
-        'details': action.details,
-        'destructive': true,
-      },
-      createdAt: DateTime.now(),
-    )));
+    unawaited(
+      _append(
+        CygnusMessage(
+          id: _id('msg'),
+          role: 'assistant',
+          text: 'Confirm schedule deletion.',
+          kind: 'confirmation',
+          payload: <String, dynamic>{
+            'pendingId': action.id,
+            'title': action.title,
+            'details': action.details,
+            'destructive': true,
+          },
+          createdAt: DateTime.now(),
+        ),
+      ),
+    );
     notifyListeners();
     return <String, Object?>{
       'ok': true,
@@ -1023,11 +1290,16 @@ You may navigate the app using open_page when the user asks to open a page.
     };
   }
 
-  Future<Map<String, Object?>> _setScheduleEnabled(String id, bool enabled) async {
+  Future<Map<String, Object?>> _setScheduleEnabled(
+    String id,
+    bool enabled,
+  ) async {
     final plan = _plan;
-    if (plan == null) return <String, Object?>{'ok': false, 'message': 'Plans are not ready.'};
+    if (plan == null)
+      return <String, Object?>{'ok': false, 'message': 'Plans are not ready.'};
     final matches = plan.plans.where((item) => item.id == id);
-    if (matches.isEmpty) return <String, Object?>{'ok': false, 'message': 'Schedule not found.'};
+    if (matches.isEmpty)
+      return <String, Object?>{'ok': false, 'message': 'Schedule not found.'};
     final ok = await plan.setEnabled(matches.first, enabled);
     return <String, Object?>{
       'ok': ok,
@@ -1038,9 +1310,12 @@ You may navigate the app using open_page when the user asks to open a page.
     };
   }
 
-  Future<Map<String, Object?>> _executePending(PendingCygnusAction action) async {
+  Future<Map<String, Object?>> _executePending(
+    PendingCygnusAction action,
+  ) async {
     final plan = _plan;
-    if (plan == null) return <String, Object?>{'ok': false, 'message': 'Plans are not ready.'};
+    if (plan == null)
+      return <String, Object?>{'ok': false, 'message': 'Plans are not ready.'};
 
     if (action.type == 'create_schedule') {
       final a = action.arguments;
@@ -1051,8 +1326,12 @@ You may navigate the app using open_page when the user asks to open a page.
         time: a['time']?.toString() ?? '00:00:00',
         durationSec: _asInt(a['durationSec']) ?? 30,
         repeat: a['repeat']?.toString() ?? 'once',
-        weekdays: (a['weekdays'] as List?)?.map(_asInt).whereType<int>().toList() ?? const <int>[],
-        endDate: a['endDate']?.toString().isNotEmpty == true ? a['endDate'].toString() : null,
+        weekdays:
+            (a['weekdays'] as List?)?.map(_asInt).whereType<int>().toList() ??
+            const <int>[],
+        endDate: a['endDate']?.toString().isNotEmpty == true
+            ? a['endDate'].toString()
+            : null,
         enabled: true,
       );
       final ok = await plan.create(draft);
@@ -1074,8 +1353,12 @@ You may navigate the app using open_page when the user asks to open a page.
         time: a['time']?.toString() ?? '00:00:00',
         durationSec: _asInt(a['durationSec']) ?? 30,
         repeat: a['repeat']?.toString() ?? 'once',
-        weekdays: (a['weekdays'] as List?)?.map(_asInt).whereType<int>().toList() ?? const <int>[],
-        endDate: a['endDate']?.toString().isNotEmpty == true ? a['endDate'].toString() : null,
+        weekdays:
+            (a['weekdays'] as List?)?.map(_asInt).whereType<int>().toList() ??
+            const <int>[],
+        endDate: a['endDate']?.toString().isNotEmpty == true
+            ? a['endDate'].toString()
+            : null,
         enabled: a['enabled'] != false,
       );
       final ok = await plan.update(id, draft);
@@ -1092,72 +1375,40 @@ You may navigate the app using open_page when the user asks to open a page.
       final ok = await plan.delete(id);
       return <String, Object?>{
         'ok': ok,
-        'message': ok ? 'Schedule deleted.' : (plan.error ?? 'Could not delete the schedule.'),
+        'message': ok
+            ? 'Schedule deleted.'
+            : (plan.error ?? 'Could not delete the schedule.'),
       };
     }
 
-    return <String, Object?>{'ok': false, 'message': 'Unsupported pending action.'};
+    return <String, Object?>{
+      'ok': false,
+      'message': 'Unsupported pending action.',
+    };
   }
 
-  Future<String?> _tryFastMotorCommand(String text) async {
-    final normalized = text.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
-
-    // Any timing/recurrence cue makes this a plan request rather than an
-    // immediate control request.
-    final planCue = RegExp(
-      r'(schedule|tomorrow|naalaik|nalai|நாளை|daily|every day|monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon\b|tue\b|wed\b|thu\b|fri\b|sat\b|sun\b|after\b|later\b|\bsec(?:ond)?s?\b|\bmins?\b|minute|hour|நிமிடம்|மணி|\d{1,2}:\d{2})',
-    );
-    if (planCue.hasMatch(normalized)) return null;
-
-    bool? requestedState;
-    if (RegExp(r'\b(off|stop|stopp|niruth|band|close)\b|நிறுத்து|बंद').hasMatch(normalized)) {
-      requestedState = false;
-    } else if (RegExp(r'\b(on|start|run|open)\b|தொடங்கு|चालू').hasMatch(normalized)) {
-      requestedState = true;
-    }
-    if (requestedState == null) return null;
-
-    final allMotors = RegExp(r'\b(all|ella|ellaa|எல்லா|sabhi)\b').hasMatch(normalized) &&
-        RegExp(r'\b(motor|motro|moter|motar)s?\b').hasMatch(normalized);
-    if (allMotors) {
-      final result = await _setAllMotors(requestedState);
-      return result['message']?.toString();
-    }
-
-    int? motor;
-    final numeric = RegExp(r'\b(?:motor|motro|moter|motar|m)\s*(?:no\.?\s*)?([123])\b').firstMatch(normalized);
-    if (numeric != null) motor = int.tryParse(numeric.group(1)!);
-
-    motor ??= RegExp(r'\b(?:motor|motro|moter|motar)\s*(?:one|ஒன்று|ஒண்ணு|ek)\b').hasMatch(normalized) ? 1 : null;
-    motor ??= RegExp(r'\b(?:motor|motro|moter|motar)\s*(?:two|இரண்டு|ரெண்டு|do)\b').hasMatch(normalized) ? 2 : null;
-    motor ??= RegExp(r'\b(?:motor|motro|moter|motar)\s*(?:three|மூன்று|மூணு|teen)\b').hasMatch(normalized) ? 3 : null;
-
-    // Friendly aliases already visible in the app/prototype.
-    if (motor == null && normalized.contains('green')) motor = 1;
-    if (motor == null && normalized.contains('orange')) motor = 2;
-    if (motor == null && normalized.contains('red')) motor = 3;
-
-    if (motor == null) return null;
-    final result = await _setMotor(motor, requestedState);
-    return result['message']?.toString();
-  }
-
-  Future<bool> _waitForMotor(int motor, bool state) async {
+  Future<bool> _waitForMotor(int motor, bool state, String commandId) async {
     final agro = _agro;
     if (agro == null) return false;
     bool actual() => switch (motor) {
-          1 => agro.controls.actual2,
-          2 => agro.controls.actual3,
-          3 => agro.controls.actual4,
-          _ => false,
-        };
+      1 => agro.controls.actual2,
+      2 => agro.controls.actual3,
+      3 => agro.controls.actual4,
+      _ => false,
+    };
 
     final deadline = DateTime.now().add(const Duration(seconds: 5));
     while (DateTime.now().isBefore(deadline)) {
-      if (actual() == state && agro.controls.pendingKey == null) return true;
+      if (actual() == state &&
+          agro.controls.lastCommandId == commandId &&
+          agro.controls.pendingKey == null)
+        return true;
+      if (!agro.deviceOnline) return false;
       await Future<void>.delayed(const Duration(milliseconds: 120));
     }
-    return actual() == state;
+    return actual() == state &&
+        agro.controls.lastCommandId == commandId &&
+        agro.controls.pendingKey == null;
   }
 
   String? _validateSchedule({
@@ -1170,12 +1421,19 @@ You may navigate the app using open_page when the user asks to open a page.
     String? endDate,
   }) {
     if (motor < 1 || motor > 3) return 'Choose Motor 1, 2 or 3.';
-    if (!RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(date)) return 'Date must be YYYY-MM-DD.';
-    if (!RegExp(r'^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$').hasMatch(time)) return 'Time must be HH:mm:ss.';
-    if (durationSec < 1 || durationSec > 86400) return 'Duration must be between 1 second and 24 hours.';
-    if (!const {'once', 'daily', 'weekly'}.contains(repeat)) return 'Repeat must be once, daily or weekly.';
-    if (repeat == 'weekly' && weekdays.isEmpty) return 'Choose at least one weekday.';
-    if (endDate != null && endDate.isNotEmpty && !RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(endDate)) {
+    if (!RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(date))
+      return 'Date must be YYYY-MM-DD.';
+    if (!RegExp(r'^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$').hasMatch(time))
+      return 'Time must be HH:mm:ss.';
+    if (durationSec < 1 || durationSec > 86400)
+      return 'Duration must be between 1 second and 24 hours.';
+    if (!const {'once', 'daily', 'weekly'}.contains(repeat))
+      return 'Repeat must be once, daily or weekly.';
+    if (repeat == 'weekly' && weekdays.isEmpty)
+      return 'Choose at least one weekday.';
+    if (endDate != null &&
+        endDate.isNotEmpty &&
+        !RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(endDate)) {
       return 'End date must be YYYY-MM-DD.';
     }
     return null;
@@ -1183,6 +1441,7 @@ You may navigate the app using open_page when the user asks to open a page.
 
   Future<void> _append(CygnusMessage message) async {
     _messages.add(message);
+    if (!_disposed) notifyListeners();
     final id = _sessionId;
     if (id != null && message.kind != 'image') {
       await _store.saveMessage(id, message);
@@ -1191,31 +1450,18 @@ You may navigate the app using open_page when the user asks to open a page.
   }
 
   CygnusMessage _userMessage(String text) => CygnusMessage(
-        id: _id('msg'),
-        role: 'user',
-        text: text,
-        createdAt: DateTime.now(),
-      );
+    id: _id('msg'),
+    role: 'user',
+    text: text,
+    createdAt: DateTime.now(),
+  );
 
   CygnusMessage _assistantMessage(String text) => CygnusMessage(
-        id: _id('msg'),
-        role: 'assistant',
-        text: text,
-        createdAt: DateTime.now(),
-      );
-
-  String _friendlyAiError(Object error) {
-    if (error is QuotaExceeded) {
-      return 'Cygnus is busy right now. Your normal farm controls still work — try again shortly.';
-    }
-    if (error is ServiceApiNotEnabled) {
-      return 'Cygnus needs Firebase AI Logic to be enabled for this project.';
-    }
-    if (error is InvalidApiKey) {
-      return 'Cygnus could not verify the Firebase AI configuration.';
-    }
-    return 'Cygnus couldn’t complete that request. Please try again.';
-  }
+    id: _id('msg'),
+    role: 'assistant',
+    text: text,
+    createdAt: DateTime.now(),
+  );
 
   int? _asInt(Object? value) {
     if (value is int) return value;
@@ -1236,7 +1482,9 @@ You may navigate the app using open_page when the user asks to open a page.
   double _metricValue(Telemetry t, String metric) {
     if (metric == 'humidity') return t.humidity;
     if (metric == 'soil') return t.soil;
-    if (metric == 'water' || metric == 'waterlevel' || metric == 'water_level') {
+    if (metric == 'water' ||
+        metric == 'waterlevel' ||
+        metric == 'water_level') {
       return t.waterLevel;
     }
     return t.temperature;
@@ -1245,7 +1493,9 @@ You may navigate the app using open_page when the user asks to open a page.
   String _metricLabel(String metric) {
     if (metric == 'humidity') return 'Humidity';
     if (metric == 'soil') return 'Soil moisture';
-    if (metric == 'water' || metric == 'waterlevel' || metric == 'water_level') {
+    if (metric == 'water' ||
+        metric == 'waterlevel' ||
+        metric == 'water_level') {
       return 'Water level';
     }
     return 'Temperature';
@@ -1261,15 +1511,30 @@ You may navigate the app using open_page when the user asks to open a page.
   String _repeatLabel(String repeat, List<int> weekdays) {
     if (repeat == 'daily') return 'Daily';
     if (repeat == 'weekly') {
-      const labels = <int, String>{0: 'Sun', 1: 'Mon', 2: 'Tue', 3: 'Wed', 4: 'Thu', 5: 'Fri', 6: 'Sat'};
-      return weekdays.map((e) => labels[e] ?? '').where((e) => e.isNotEmpty).join(', ');
+      const labels = <int, String>{
+        0: 'Sun',
+        1: 'Mon',
+        2: 'Tue',
+        3: 'Wed',
+        4: 'Thu',
+        5: 'Fri',
+        6: 'Sat',
+      };
+      return weekdays
+          .map((e) => labels[e] ?? '')
+          .where((e) => e.isNotEmpty)
+          .join(', ');
     }
     return 'Once';
   }
 
   Map<String, Object?> _jsonSafeMap(Map<String, dynamic> input) {
     return input.map((key, value) {
-      if (value is List) return MapEntry<String, Object?>(key, value.map((e) => e.toString()).toList());
+      if (value is List)
+        return MapEntry<String, Object?>(
+          key,
+          value.map((e) => e.toString()).toList(),
+        );
       if (value is num || value is bool || value is String || value == null) {
         return MapEntry<String, Object?>(key, value);
       }
@@ -1287,11 +1552,13 @@ You may navigate the app using open_page when the user asks to open a page.
     return '${two(value.hour)}:${two(value.minute)}:${two(value.second)}';
   }
 
-  String _id(String prefix) => '${prefix}_${DateTime.now().microsecondsSinceEpoch}_${Random.secure().nextInt(1 << 32).toRadixString(16)}';
+  String _id(String prefix) =>
+      '${prefix}_${DateTime.now().microsecondsSinceEpoch}_${Random.secure().nextInt(1 << 32).toRadixString(16)}';
 
   @override
   void dispose() {
     _disposed = true;
+    _voiceRestart?.cancel();
     _voice.dispose();
     _plantAi.dispose();
     super.dispose();

@@ -241,9 +241,17 @@ Key behavior:
   existing Next.js scheduling APIs; create/update/delete use final confirmation
 - Plant Health photo capture/gallery runs the bundled TFLite model on-device,
   then places diagnosis and treatment guidance in the same chat
-- Firebase RTDB chat sessions with local-history fallback
-- push-to-talk and continuous turn-by-turn voice conversation using the phone's
+- Phone-only chat history in local storage; no Firebase history reads or writes
+- Push-to-talk and bounded turn-by-turn voice conversation using the phone's
   speech recognizer and TTS
 - Cygnus failure never disables Home, Motors, Plans, Plant Health, or monitoring
 
 See `FIREBASE-CYGNUS-SETUP.md` before the first Cygnus test.
+
+
+## Cygnus reliability update (1.5.1+8)
+
+See `CYGNUS-FIX-NOTES.md` for the verified failures, fixes and device retest steps.
+Chat history stays on this phone. AI generation still requires internet and is
+subject to Gemini API quotas. No Firebase billing or enforcement setting is changed
+by this update.

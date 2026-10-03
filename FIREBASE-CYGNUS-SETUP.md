@@ -14,30 +14,14 @@ API.
 Cygnus uses the stable `gemini-3.8-flash` model and calls it through the
 `firebase_ai` Flutter SDK. No Gemini API key is hard-coded separately in the app.
 
-## 2. Enable anonymous authentication for cloud chat history
+## 2. Local chat history
 
-Firebase Console → **Authentication** → **Sign-in method** → **Anonymous** → Enable.
-
-If Anonymous Auth is not enabled, Cygnus still works, but its conversation history
-falls back to local phone storage instead of syncing to Firebase.
-
-## 3. Merge the Cygnus RTDB rules
-
-Do **not** replace your existing database rules. Merge this node into the existing
-root rules so each anonymous/authenticated user can read and write only their own
-Cygnus sessions:
-
-```json
-"cygnusUsers": {
-  "$uid": {
-    ".read": "auth != null && auth.uid === $uid",
-    ".write": "auth != null && auth.uid === $uid"
-  }
-}
-```
-
-The app stores only chat/session records under `cygnusUsers/{uid}/sessions`. Farm
-telemetry, schedules and server data keep using their existing paths and rules.
+Cygnus conversations are saved only on this phone using SharedPreferences.
+Anonymous sign-in and Firebase RTDB chat-history rules are no longer required.
+The legacy rules snippet is not used by this version. Existing cloud records are
+not migrated or deleted. Farm telemetry and schedule services keep their existing
+configuration. The AI request itself still sends the relevant conversation and
+tool results to Firebase AI Logic for generation.
 
 ## 4. App Check
 
@@ -95,3 +79,20 @@ Firebase credentials.
 
 The automatic soil-moisture relay is intentionally **not** exposed as a Cygnus
 manual-control tool.
+
+## Free-tier and voice behavior
+
+The Gemini Developer API offers a quota-limited free tier for eligible models on
+Firebase Spark projects without a linked billing account. A linked billing account
+uses paid-tier pricing; code alone cannot guarantee a free project. No billing
+setting is changed by this source update. See the current official pages:
+
+- https://firebase.google.com/docs/ai-logic/pricing
+- https://firebase.google.com/docs/ai-logic/quotas
+- https://ai.google.dev/gemini-api/docs/pricing
+
+Voice uses the phone speech recognizer, then text AI, then phone TTS. It is not a
+Gemini Live audio session. Select Tamil for Tamil speech. Android can end listening
+after silence; voice mode retries a silent turn twice, then pauses with guidance.
+Recognition errors and AI failures pause the loop instead of repeatedly calling
+the API. See https://pub.dev/packages/speech_to_text .
