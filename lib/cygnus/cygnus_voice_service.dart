@@ -143,7 +143,7 @@ class CygnusVoiceService {
           cancelOnError: true,
           onDevice: false,
           listenMode: stt.ListenMode.dictation,
-          pauseFor: const Duration(milliseconds: 950),
+          pauseFor: const Duration(seconds: 3),
           listenFor: const Duration(seconds: 45),
           localeId: localeId,
           contextualPhrases: const <String>[
@@ -161,11 +161,6 @@ class CygnusVoiceService {
           ],
         ),
       );
-
-      if (!_speech.isListening && !_finalSubmitted) {
-        _listening = false;
-        onLevel(0);
-      }
     } catch (error) {
       _listening = false;
       _processing = false;

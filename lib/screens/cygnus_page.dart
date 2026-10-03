@@ -3,6 +3,8 @@ import 'dart:math' as math;
 
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 
@@ -631,9 +633,16 @@ class _LiveVoiceExperienceState extends State<_LiveVoiceExperience>
                                         : const Color(0xFF526A98).withValues(alpha: 0.28),
                                   ),
                                 ),
-                                child: Text(
-                                  message.text,
-                                  style: const TextStyle(fontSize: 12.5, height: 1.35),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    _MessageMarkdown(message.text, fontSize: 12.5),
+                                    Align(
+                                      alignment: Alignment.centerRight,
+                                      child: _CopyMessageButton(message.text),
+                                    ),
+                                  ],
                                 ),
                               ),
                             );
@@ -1050,10 +1059,78 @@ class _TextBubble extends StatelessWidget {
               : AppTheme.border.withValues(alpha: 0.9),
         ),
       ),
-      child: Text(
-        message.text,
-        style: const TextStyle(height: 1.45, fontSize: 14),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _MessageMarkdown(message.text, fontSize: 14),
+          Align(
+            alignment: Alignment.centerRight,
+            child: _CopyMessageButton(message.text),
+          ),
+        ],
       ),
+    );
+  }
+}
+
+class _MessageMarkdown extends StatelessWidget {
+  const _MessageMarkdown(this.data, {required this.fontSize});
+
+  final String data;
+  final double fontSize;
+
+  @override
+  Widget build(BuildContext context) {
+    final bodyStyle = TextStyle(
+      color: AppTheme.text,
+      height: 1.45,
+      fontSize: fontSize,
+    );
+
+    return MarkdownBody(
+      data: data,
+      selectable: true,
+      styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+        p: bodyStyle,
+        h1: bodyStyle.copyWith(fontSize: fontSize * 1.55, fontWeight: FontWeight.w800),
+        h2: bodyStyle.copyWith(fontSize: fontSize * 1.35, fontWeight: FontWeight.w800),
+        h3: bodyStyle.copyWith(fontSize: fontSize * 1.15, fontWeight: FontWeight.w700),
+        blockquote: bodyStyle.copyWith(color: AppTheme.muted),
+        listBullet: bodyStyle.copyWith(color: AppTheme.emeraldSoft),
+        tableBody: bodyStyle,
+        code: bodyStyle.copyWith(
+          fontFamily: 'monospace',
+          backgroundColor: AppTheme.background.withValues(alpha: 0.7),
+        ),
+      ),
+    );
+  }
+}
+
+class _CopyMessageButton extends StatelessWidget {
+  const _CopyMessageButton(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: 'Copy message',
+      visualDensity: VisualDensity.compact,
+      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+      padding: EdgeInsets.zero,
+      onPressed: () async {
+        await Clipboard.setData(ClipboardData(text: text));
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Message copied'),
+            duration: Duration(seconds: 1),
+          ),
+        );
+      },
+      icon: const Icon(Icons.copy_rounded, size: 16, color: AppTheme.muted),
     );
   }
 }
