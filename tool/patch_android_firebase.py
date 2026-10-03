@@ -1,15 +1,26 @@
 #!/usr/bin/env python3
 from pathlib import Path
 import json
+import os
 import re
-import shutil
 
 ROOT = Path('.')
-source = ROOT / 'tool' / 'firebase' / 'google-services.json'
-if not source.exists():
-    raise SystemExit('Missing tool/firebase/google-services.json')
+raw = os.environ.get('GOOGLE_SERVICES_JSON', '').strip()
+local_source = ROOT / 'tool' / 'firebase' / 'google-services.json'
 
-config = json.loads(source.read_text())
+if raw:
+    try:
+        config = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f'GOOGLE_SERVICES_JSON is invalid JSON: {exc}')
+elif local_source.exists():
+    config = json.loads(local_source.read_text())
+else:
+    raise SystemExit(
+        'Missing Firebase Android config. Add GitHub Actions secret '
+        'GOOGLE_SERVICES_JSON containing the full google-services.json.'
+    )
+
 clients = config.get('client') or []
 if not clients:
     raise SystemExit('google-services.json has no client entries')
@@ -19,9 +30,8 @@ if package_name != 'com.agroconnect.agro_connect':
 
 app_target = ROOT / 'android' / 'app' / 'google-services.json'
 app_target.parent.mkdir(parents=True, exist_ok=True)
-shutil.copy2(source, app_target)
+app_target.write_text(json.dumps(config, indent=2) + '\n')
 
-# Modern Flutter templates declare plugin versions in settings.gradle.kts.
 settings_kts = ROOT / 'android' / 'settings.gradle.kts'
 settings_groovy = ROOT / 'android' / 'settings.gradle'
 
@@ -46,7 +56,6 @@ elif settings_groovy.exists():
         text = text[:insert_at] + '\n' + plugin_line + text[insert_at:]
     settings_groovy.write_text(text)
 else:
-    # Older Gradle layout fallback.
     root_kts = ROOT / 'android' / 'build.gradle.kts'
     root_groovy = ROOT / 'android' / 'build.gradle'
     if root_kts.exists():
@@ -81,7 +90,7 @@ if app_kts.exists():
     app_kts.write_text(text)
 elif app_groovy.exists():
     text = app_groovy.read_text()
-    if "id 'com.google.gms.google-services'" not in text and 'apply plugin: \'com.google.gms.google-services\'' not in text:
+    if "id 'com.google.gms.google-services'" not in text and "apply plugin: 'com.google.gms.google-services'" not in text:
         match = re.search(r'plugins\s*\{', text)
         if match:
             insert_at = match.end()
@@ -91,14 +100,5 @@ elif app_groovy.exists():
     app_groovy.write_text(text)
 else:
     raise SystemExit('Android app Gradle file not found')
-
-# Assert application ID remains aligned with Firebase registration.
-combined = ''
-for candidate in (app_kts, app_groovy):
-    if candidate.exists():
-        combined = candidate.read_text()
-        break
-if 'com.agroconnect.agro_connect' not in combined:
-    print('Note: Flutter template may derive applicationId indirectly; Firebase package was verified from config.')
 
 print('Firebase Android configuration applied successfully.')

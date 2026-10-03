@@ -1,0 +1,9 @@
+name = "agro-connect-cygnus"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+[vars]
+REQUIRE_FIREBASE_AUTH = "true"
+PRIMARY_MODEL = "openai/gpt-oss-120b"
+FAST_MODEL = "openai/gpt-oss-20b"

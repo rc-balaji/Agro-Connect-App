@@ -7,15 +7,6 @@ import '../firebase_options.dart';
 class FirebaseBootstrap {
   FirebaseBootstrap._();
 
-  static const _debugToken = String.fromEnvironment(
-    'AGRO_APP_CHECK_DEBUG_TOKEN',
-  );
-
-  static bool isValidDebugToken(String value) => RegExp(
-    r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
-    caseSensitive: false,
-  ).hasMatch(value);
-
   static const bool _forceDebugAppCheck = bool.fromEnvironment(
     'AGRO_APP_CHECK_DEBUG',
     defaultValue: false,
@@ -26,9 +17,6 @@ class FirebaseBootstrap {
 
   static bool get initialized => _initialized;
   static String? get warning => _warning;
-  static bool get usesDebugAppCheck => kDebugMode || _forceDebugAppCheck;
-  static String get appCheckProvider =>
-      usesDebugAppCheck ? 'debug' : 'play_integrity';
 
   static Future<void> initialize() async {
     if (_initialized) return;
@@ -38,48 +26,25 @@ class FirebaseBootstrap {
         options: DefaultFirebaseOptions.currentPlatform,
       );
       _initialized = true;
-    } catch (error) {
+    } catch (error, stack) {
       _warning = 'Firebase could not initialize.';
-      debugPrint(
-        '[AppCheck] stage=firebase_initialize status=failed '
-        'type=${error.runtimeType}',
-      );
+      debugPrint('Firebase initialization failed: $error\n$stack');
       return;
     }
 
     try {
-      if (usesDebugAppCheck &&
-          _debugToken.isNotEmpty &&
-          !isValidDebugToken(_debugToken)) {
-        throw const FormatException('App Check debug token must be UUID v4.');
-      }
-      debugPrint(
-        '[AppCheck] provider=$appCheckProvider '
-        'project=${Firebase.app().options.projectId}',
-      );
       await FirebaseAppCheck.instance.activate(
-        providerAndroid: usesDebugAppCheck
-            ? AndroidDebugProvider(
-                debugToken: _debugToken.isEmpty ? null : _debugToken,
-              )
-            : const AndroidPlayIntegrityProvider(),
+        providerAndroid: (kReleaseMode && !_forceDebugAppCheck)
+            ? const AndroidPlayIntegrityProvider()
+            : const AndroidDebugProvider(),
       );
       await FirebaseAppCheck.instance.setTokenAutoRefreshEnabled(true);
-      // Activation installs the provider; only a successful request verifies
-      // token exchange. Let the SDK fetch/cache tokens for actual requests.
-      debugPrint(
-        '[AppCheck] provider=$appCheckProvider status=activated '
-        'verification=pending_request',
-      );
-    } catch (error) {
+    } catch (error, stack) {
       // Do not block the core farm app if App Check is not configured yet.
       // Firebase Console enforcement should only be enabled after valid traffic
       // is visible for the production signing certificate.
       _warning = 'App protection is not fully configured yet.';
-      debugPrint(
-        '[AppCheck] provider=$appCheckProvider '
-        'stage=activate status=failed type=${error.runtimeType}',
-      );
+      debugPrint('Firebase App Check activation failed: $error\n$stack');
     }
   }
 }

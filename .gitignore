@@ -1,5 +1,4 @@
 .dart_tool/
-.flutter-plugins-dependencies
 .packages
 .pub/
 build/
@@ -10,5 +9,7 @@ android/key.properties
 .vscode/
 *.iml
 .DS_Store
-.local/
-flutter_*.log
+
+# Firebase Android config is restored from GitHub Actions secret
+android/app/google-services.json
+tool/firebase/google-services.json

@@ -1,5 +1,5 @@
 name: agro_connect
-version: 1.5.2+9
+version: 1.6.0+8
 publish_to: none
 
 description: AGRO CONNECT realtime smart farming mobile app with offline Leaf AI.
@@ -23,14 +23,11 @@ dependencies:
   flutter_foreground_task: ^10.0.0
   flutter_local_notifications: ^19.5.0
   firebase_core: ^4.15.0
-  firebase_ai: ^4.0.0
   firebase_app_check: ^0.4.8
   firebase_database: ^12.6.0
   firebase_auth: ^6.7.0
   speech_to_text: ^7.4.0
   flutter_tts: ^4.2.5
-  record: ^6.2.1
-  flutter_soloud: ^4.1.7
 
 dev_dependencies:
   flutter_test:
@@ -41,6 +38,7 @@ flutter:
   uses-material-design: true
   assets:
     - assets/branding/app_icon.png
+    - assets/branding/cygnus_emblem.png
     - assets/models/plant_disease_mobilenetv3.tflite
     - assets/models/labels.txt
 

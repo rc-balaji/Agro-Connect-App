@@ -52,6 +52,8 @@ jobs:
           PY
 
       - name: Configure Firebase Android
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: python3 tool/patch_android_firebase.py
 
       - name: Align Android Java/Kotlin JVM targets
@@ -73,15 +75,7 @@ jobs:
         run: flutter test
 
       - name: Build test APK (App Check debug provider)
-        env:
-          AGRO_APP_CHECK_DEBUG_TOKEN: ${{ secrets.AGRO_APP_CHECK_DEBUG_TOKEN }}
-        run: |
-          python3 tool/write_debug_defines.py "$RUNNER_TEMP/agro-debug.json"
-          flutter build apk --release --dart-define-from-file="$RUNNER_TEMP/agro-debug.json"
-
-      - name: Remove temporary test configuration
-        if: always()
-        run: rm -f "$RUNNER_TEMP/agro-debug.json"
+        run: flutter build apk --release --dart-define=AGRO_APP_CHECK_DEBUG=true
 
       - name: Build release App Bundle
         run: flutter build appbundle --release

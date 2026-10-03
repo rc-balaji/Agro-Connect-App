@@ -16,9 +16,9 @@ class AgroController extends ChangeNotifier {
     MqttService? mqttService,
     NetworkService? networkService,
     HistoryStore? historyStore,
-  }) : _mqtt = mqttService ?? MqttService(),
-       _networkService = networkService ?? NetworkService(),
-       _historyStore = historyStore ?? HistoryStore();
+  })  : _mqtt = mqttService ?? MqttService(),
+        _networkService = networkService ?? NetworkService(),
+        _historyStore = historyStore ?? HistoryStore();
 
   final MqttService _mqtt;
   final NetworkService _networkService;
@@ -220,8 +220,7 @@ class AgroController extends ChangeNotifier {
     );
 
     if (_history.isEmpty ||
-        now.difference(_history.last.receivedAt) >=
-            const Duration(seconds: 1)) {
+        now.difference(_history.last.receivedAt) >= const Duration(seconds: 1)) {
       _history.add(_telemetry);
       if (_history.length > MqttConfig.maxHistoryPoints) {
         _history.removeRange(0, _history.length - MqttConfig.maxHistoryPoints);
@@ -268,17 +267,17 @@ class AgroController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<String?> setMotor(int motor, bool value) async {
+  Future<void> setMotor(int motor, bool value) async {
     if (!_mqttConnected) {
       _error = 'Connection unavailable. Try again.';
       notifyListeners();
-      return null;
+      return;
     }
 
     if (!deviceOnline) {
       _error = 'Farm device is offline.';
       notifyListeners();
-      return null;
+      return;
     }
 
     var desired2 = _controls.desired2;
@@ -296,7 +295,7 @@ class AgroController extends ChangeNotifier {
         desired4 = value;
         break;
       default:
-        return null;
+        return;
     }
 
     final key = 'motor$motor';
@@ -333,7 +332,6 @@ class AgroController extends ChangeNotifier {
         'sentAt': DateTime.now().millisecondsSinceEpoch,
         'source': 'flutter-mobile',
       });
-      return commandId;
     } catch (error) {
       _commandSentMicros.remove(commandId);
       _commandTimeouts.remove(commandId)?.cancel();
@@ -341,7 +339,6 @@ class AgroController extends ChangeNotifier {
       debugPrint('Motor command failed: $error');
       _error = 'Could not update the motor. Try again.';
       notifyListeners();
-      return null;
     }
   }
 

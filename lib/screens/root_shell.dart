@@ -157,7 +157,9 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
               builder: (context) => _ShellHeader(
                 title: _labels[_index],
                 showAiTag: _index == 5 || _index == 6,
+                cygnusSelected: _index == 6,
                 onMenu: () => Scaffold.of(context).openDrawer(),
+                onCygnus: () => _navigateByName('cygnus'),
               ),
             ),
             Selector<AgroController, String?>(
@@ -212,11 +214,15 @@ class _ShellHeader extends StatelessWidget {
   const _ShellHeader({
     required this.title,
     required this.onMenu,
+    required this.onCygnus,
+    required this.cygnusSelected,
     this.showAiTag = false,
   });
 
   final String title;
   final VoidCallback onMenu;
+  final VoidCallback onCygnus;
+  final bool cygnusSelected;
   final bool showAiTag;
 
   @override
@@ -278,6 +284,44 @@ class _ShellHeader extends StatelessWidget {
                   ],
                 ),
               ],
+            ),
+          ),
+          Tooltip(
+            message: 'Open Cygnus',
+            child: InkWell(
+              onTap: onCygnus,
+              borderRadius: BorderRadius.circular(13),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                width: 38,
+                height: 38,
+                padding: const EdgeInsets.all(4),
+                margin: const EdgeInsets.only(right: 7),
+                decoration: BoxDecoration(
+                  color: cygnusSelected
+                      ? const Color(0xFF15294D)
+                      : const Color(0xFF0D231C),
+                  borderRadius: BorderRadius.circular(13),
+                  border: Border.all(
+                    color: cygnusSelected
+                        ? const Color(0xFF6A7CFF).withValues(alpha: 0.72)
+                        : AppTheme.border,
+                  ),
+                  boxShadow: cygnusSelected
+                      ? [
+                          BoxShadow(
+                            color: const Color(0xFF536DFF).withValues(alpha: 0.18),
+                            blurRadius: 14,
+                          ),
+                        ]
+                      : null,
+                ),
+                child: Image.asset(
+                  'assets/branding/cygnus_emblem.png',
+                  fit: BoxFit.contain,
+                  filterQuality: FilterQuality.high,
+                ),
+              ),
             ),
           ),
           Selector<AgroController, bool>(
@@ -413,10 +457,24 @@ class _AgroDrawer extends StatelessWidget {
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(14),
                       ),
-                      leading: Icon(
-                        item.icon,
-                        color: selected ? AppTheme.emerald : AppTheme.muted,
-                      ),
+                      leading: index == 6
+                          ? Container(
+                              width: 28,
+                              height: 28,
+                              padding: const EdgeInsets.all(2),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF101E39),
+                                borderRadius: BorderRadius.circular(9),
+                              ),
+                              child: Image.asset(
+                                'assets/branding/cygnus_emblem.png',
+                                fit: BoxFit.contain,
+                              ),
+                            )
+                          : Icon(
+                              item.icon,
+                              color: selected ? AppTheme.emerald : AppTheme.muted,
+                            ),
                       title: Text(
                         item.label,
                         style: TextStyle(
