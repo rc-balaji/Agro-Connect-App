@@ -1186,6 +1186,7 @@ class CygnusController extends ChangeNotifier {
 
     await _voice.startListening(
       languageCode: _languageCode,
+      liveConversation: keepConversation,
       onPartial: (text) {
         if (_disposed) return;
         _voiceDraft = text;
@@ -1248,7 +1249,7 @@ class CygnusController extends ChangeNotifier {
   }
 
   Future<void> stopVoiceInput() async {
-    if (_voice.listening) {
+    if (_listening || _voice.listening) {
       _voiceProcessing = true;
       _listening = false;
       _voiceDraft = 'Understanding your voice…';

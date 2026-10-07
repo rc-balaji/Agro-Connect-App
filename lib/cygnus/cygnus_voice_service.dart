@@ -25,10 +25,15 @@ class CygnusVoiceService {
   bool _bargeTriggering = false;
 
   Timer? _finalFallbackTimer;
+  Timer? _restartListeningTimer;
   Timer? _bargeTimer;
   DateTime? _bargeStartedAt;
   String? _bargePath;
   String _latestWords = '';
+  String _committedWords = '';
+  String _currentWords = '';
+  String? _activeLocaleId;
+  bool _manualStopRequired = false;
   double _minSound = 999;
   double _maxSound = -999;
 
@@ -59,12 +64,15 @@ class CygnusVoiceService {
         onError: (error) {
           if (!_listening && !_processing) return;
           debugPrint('Cygnus native speech error: ${error.errorMsg}');
+          final reportError = !_finalSubmitted;
+          _restartListeningTimer?.cancel();
+          _finalSubmitted = true;
           _listening = false;
           _processing = false;
           _finishing = false;
           _onProcessing?.call(false);
           _onLevel?.call(0);
-          if (!_finalSubmitted) {
+          if (reportError) {
             _onError?.call(_friendlySpeechError(error.errorMsg));
           }
         },
@@ -90,6 +98,7 @@ class CygnusVoiceService {
 
   Future<void> startListening({
     required String languageCode,
+    required bool liveConversation,
     required ValueChanged<String> onPartial,
     required ValueChanged<String> onFinal,
     required ValueChanged<String> onError,
@@ -113,6 +122,9 @@ class CygnusVoiceService {
     _onLevel = onLevel;
     _onProcessing = onProcessing;
     _latestWords = '';
+    _committedWords = '';
+    _currentWords = '';
+    _manualStopRequired = !liveConversation;
     _finalSubmitted = false;
     _finishing = false;
     _processing = false;
@@ -120,47 +132,10 @@ class CygnusVoiceService {
     _maxSound = -999;
 
     final localeId = await _preferredLocale(languageCode);
+    _activeLocaleId = localeId;
 
     try {
-      _listening = true;
-      onPartial('Listening…');
-      onLevel(0.04);
-
-      await _speech.listen(
-        onResult: (result) {
-          final words = result.recognizedWords.trim();
-          if (words.isNotEmpty) {
-            _latestWords = words;
-            _onPartial?.call(words);
-          }
-          if (result.finalResult && words.isNotEmpty) {
-            _emitFinal(words);
-          }
-        },
-        onSoundLevelChange: _handleSoundLevel,
-        listenOptions: stt.SpeechListenOptions(
-          partialResults: true,
-          cancelOnError: true,
-          onDevice: false,
-          listenMode: stt.ListenMode.dictation,
-          pauseFor: const Duration(seconds: 3),
-          listenFor: const Duration(seconds: 45),
-          localeId: localeId,
-          contextualPhrases: const <String>[
-            'Cygnus',
-            'Agro Connect',
-            'motor one',
-            'motor two',
-            'motor three',
-            'temperature',
-            'humidity',
-            'soil moisture',
-            'water level',
-            'schedule',
-            'plant health',
-          ],
-        ),
-      );
+      await _startRecognition(localeId, showListeningPrompt: true);
     } catch (error) {
       _listening = false;
       _processing = false;
@@ -169,6 +144,65 @@ class CygnusVoiceService {
       onError('Could not start voice recognition. Please try again.');
       debugPrint('Cygnus native speech start failed: $error');
     }
+  }
+
+  Future<void> _startRecognition(
+    String? localeId, {
+    bool showListeningPrompt = false,
+  }) async {
+    _listening = true;
+    if (showListeningPrompt) {
+      _onPartial?.call('Listening…');
+      _onLevel?.call(0.04);
+    }
+
+    await _speech.listen(
+      onResult: (result) {
+        final words = result.recognizedWords.trim();
+        if (words.isEmpty) return;
+
+        if (_manualStopRequired) {
+          _currentWords = words;
+          _latestWords = [
+            _committedWords,
+            _currentWords,
+          ].where((part) => part.isNotEmpty).join(' ');
+          if (result.finalResult) {
+            _committedWords = _latestWords;
+            _currentWords = '';
+          }
+          _onPartial?.call(_latestWords);
+          return;
+        }
+
+        _latestWords = words;
+        _onPartial?.call(words);
+        if (result.finalResult) _emitFinal(words);
+      },
+      onSoundLevelChange: _handleSoundLevel,
+      listenOptions: stt.SpeechListenOptions(
+        partialResults: true,
+        cancelOnError: true,
+        onDevice: false,
+        listenMode: stt.ListenMode.dictation,
+        pauseFor: _manualStopRequired ? null : const Duration(seconds: 3),
+        listenFor: _manualStopRequired ? null : const Duration(seconds: 45),
+        localeId: localeId,
+        contextualPhrases: const <String>[
+          'Cygnus',
+          'Agro Connect',
+          'motor one',
+          'motor two',
+          'motor three',
+          'temperature',
+          'humidity',
+          'soil moisture',
+          'water level',
+          'schedule',
+          'plant health',
+        ],
+      ),
+    );
   }
 
   void _handleSoundLevel(double raw) {
@@ -183,12 +217,23 @@ class CygnusVoiceService {
   }
 
   void _handleSpeechStatus(String status) {
-    final done = status == stt.SpeechToText.doneStatus ||
+    final done =
+        status == stt.SpeechToText.doneStatus ||
         status == stt.SpeechToText.notListeningStatus;
     if (!done) return;
 
     _listening = false;
     _onLevel?.call(0);
+
+    if (_manualStopRequired && !_finishing && !_finalSubmitted) {
+      if (!_restartListeningTimerActive) {
+        _restartListeningTimer = Timer(const Duration(milliseconds: 250), () {
+          _restartListeningTimer = null;
+          unawaited(_resumeManualListening());
+        });
+      }
+      return;
+    }
 
     if (_latestWords.isNotEmpty && !_finalSubmitted) {
       _finalFallbackTimer?.cancel();
@@ -204,11 +249,31 @@ class CygnusVoiceService {
     }
   }
 
+  Future<void> _resumeManualListening() async {
+    final localeId = _activeLocaleId;
+    if (!_manualStopRequired || _finishing || _finalSubmitted || _listening) {
+      return;
+    }
+
+    try {
+      await _startRecognition(localeId);
+    } catch (error) {
+      _listening = false;
+      _onLevel?.call(0);
+      _onError?.call('Voice recognition stopped. Tap the mic and try again.');
+      debugPrint('Cygnus voice listening restart failed: $error');
+    }
+  }
+
+  bool get _restartListeningTimerActive =>
+      _restartListeningTimer?.isActive ?? false;
+
   void _emitFinal(String text) {
     final clean = text.trim();
     if (clean.isEmpty || _finalSubmitted) return;
     _finalSubmitted = true;
     _finalFallbackTimer?.cancel();
+    _restartListeningTimer?.cancel();
     _listening = false;
     _processing = false;
     _finishing = false;
@@ -220,10 +285,21 @@ class CygnusVoiceService {
   Future<void> finishListening() async {
     if (_finalSubmitted) return;
     if (!_listening && !_speech.isListening) {
-      if (_latestWords.isNotEmpty) _emitFinal(_latestWords);
+      if (_latestWords.isNotEmpty)
+        _emitFinal(_latestWords);
+      else {
+        _restartListeningTimer?.cancel();
+        _finishing = false;
+        _processing = false;
+        _onProcessing?.call(false);
+        _onError?.call(
+          'I couldn’t hear enough speech. Try again and speak naturally.',
+        );
+      }
       return;
     }
 
+    _restartListeningTimer?.cancel();
     _finishing = true;
     _processing = true;
     _onProcessing?.call(true);
@@ -244,14 +320,19 @@ class CygnusVoiceService {
         _finishing = false;
         _processing = false;
         _onProcessing?.call(false);
-        _onError?.call('I couldn’t hear enough speech. Try again and speak naturally.');
+        _onError?.call(
+          'I couldn’t hear enough speech. Try again and speak naturally.',
+        );
       }
     });
   }
 
   Future<void> cancelListening() async {
     _finalFallbackTimer?.cancel();
+    _restartListeningTimer?.cancel();
     _latestWords = '';
+    _committedWords = '';
+    _currentWords = '';
     _finalSubmitted = true;
     _listening = false;
     _processing = false;
@@ -277,9 +358,14 @@ class CygnusVoiceService {
       for (final desired in wanted) {
         final normalizedDesired = desired.toLowerCase().replaceAll('-', '_');
         for (final locale in locales) {
-          final normalizedLocale = locale.localeId.toLowerCase().replaceAll('-', '_');
+          final normalizedLocale = locale.localeId.toLowerCase().replaceAll(
+            '-',
+            '_',
+          );
           if (normalizedLocale == normalizedDesired ||
-              normalizedLocale.startsWith('${normalizedDesired.split('_').first}_')) {
+              normalizedLocale.startsWith(
+                '${normalizedDesired.split('_').first}_',
+              )) {
             return locale.localeId;
           }
         }
@@ -393,7 +479,8 @@ class CygnusVoiceService {
     if (!granted) return;
 
     final temp = await getTemporaryDirectory();
-    final path = '${temp.path}/cygnus_barge_${DateTime.now().millisecondsSinceEpoch}.m4a';
+    final path =
+        '${temp.path}/cygnus_barge_${DateTime.now().millisecondsSinceEpoch}.m4a';
     _bargePath = path;
     _bargeBaseline = 0;
     _bargeBaselineSamples = 0;
@@ -426,7 +513,9 @@ class CygnusVoiceService {
       try {
         final amp = await _bargeRecorder.getAmplitude();
         final level = ((amp.current + 60.0) / 60.0).clamp(0.0, 1.0).toDouble();
-        final elapsed = DateTime.now().difference(_bargeStartedAt ?? DateTime.now());
+        final elapsed = DateTime.now().difference(
+          _bargeStartedAt ?? DateTime.now(),
+        );
 
         if (elapsed < const Duration(milliseconds: 650)) {
           _bargeBaseline += level;
@@ -503,15 +592,16 @@ class CygnusVoiceService {
   }
 
   String _ttsLocale(String code) => switch (code) {
-        'ta' => 'ta-IN',
-        'hi' => 'hi-IN',
-        'ml' => 'ml-IN',
-        'kn' => 'kn-IN',
-        _ => 'en-IN',
-      };
+    'ta' => 'ta-IN',
+    'hi' => 'hi-IN',
+    'ml' => 'ml-IN',
+    'kn' => 'kn-IN',
+    _ => 'en-IN',
+  };
 
   Future<void> dispose() async {
     _finalFallbackTimer?.cancel();
+    _restartListeningTimer?.cancel();
     await cancelListening();
     await stopSpeaking();
     await _bargeRecorder.dispose();
