@@ -336,6 +336,36 @@ class CygnusSessionStore {
     await prefs.remove('$_pendingInstructionsPrefix$sessionId');
   }
 
+  Future<void> clearSessionMessages(String sessionId) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final root = _root;
+    if (root != null) {
+      try {
+        await root.child(sessionId).child('messages').remove();
+        await root.child(sessionId).update(<String, dynamic>{
+          'title': 'New chat',
+          'updatedAt': now,
+        });
+      } catch (error) {
+        debugPrint('Cygnus Firebase message clear failed: $error');
+      }
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('$_localMessagesPrefix$sessionId');
+    await prefs.remove('$_pendingInstructionsPrefix$sessionId');
+    final sessions = await _readLocalSessionMaps();
+    final index = sessions.indexWhere((e) => e['id']?.toString() == sessionId);
+    if (index >= 0) {
+      sessions[index] = <String, dynamic>{
+        ...sessions[index],
+        'title': 'New chat',
+        'updatedAt': now,
+      };
+      await prefs.setString(_localSessionsKey, jsonEncode(sessions));
+    }
+  }
+
   Future<void> _upsertLocalSession(
     String id,
     Map<String, dynamic> record,

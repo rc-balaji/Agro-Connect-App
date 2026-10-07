@@ -273,4 +273,54 @@ void main() {
     await store.saveInstructionQueue('chat_1', const []);
     expect(await store.loadInstructionQueue('chat_1'), isEmpty);
   });
+
+  test(
+    'clearing a chat removes its local messages and pending instructions',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final store = CygnusSessionStore();
+      final sessionId = await store.createSession(languageCode: 'en');
+      final otherSessionId = await store.createSession(languageCode: 'en');
+      await store.saveMessage(
+        sessionId,
+        CygnusMessage(
+          id: 'message-1',
+          role: 'user',
+          text: 'Create a schedule',
+          createdAt: DateTime.now(),
+        ),
+      );
+      await store.saveMessage(
+        otherSessionId,
+        CygnusMessage(
+          id: 'message-2',
+          role: 'user',
+          text: 'Keep this message',
+          createdAt: DateTime.now(),
+        ),
+      );
+      await store.saveInstructionQueue(sessionId, const [
+        CygnusQueuedInstruction(
+          id: 'instruction-1',
+          text: 'Create a schedule',
+          fromVoice: false,
+        ),
+      ]);
+
+      await store.clearSessionMessages(sessionId);
+
+      expect(await store.loadMessages(sessionId), isEmpty);
+      expect(
+        (await store.loadMessages(otherSessionId)).single.text,
+        'Keep this message',
+      );
+      expect(await store.loadInstructionQueue(sessionId), isEmpty);
+      final sessions = await store.listSessions();
+      expect(sessions.map((session) => session.id), contains(sessionId));
+      expect(
+        sessions.firstWhere((session) => session.id == sessionId).title,
+        'New chat',
+      );
+    },
+  );
 }

@@ -12,6 +12,10 @@ typedef CygnusToolExecutor =
       Map<String, Object?> arguments,
     );
 
+class CygnusAgentCancelled implements Exception {
+  const CygnusAgentCancelled();
+}
+
 class GroqCygnusException implements Exception {
   const GroqCygnusException({
     required this.message,
@@ -47,6 +51,7 @@ class GroqCygnusService {
     required CygnusToolExecutor executeTool,
     required String model,
     required String reasoningEffort,
+    bool Function()? isCancelled,
   }) async {
     final messages = <Map<String, dynamic>>[
       <String, dynamic>{'role': 'system', 'content': systemInstruction},
@@ -56,6 +61,7 @@ class GroqCygnusService {
     Map<String, Object?>? lastSuccessfulResult;
 
     for (var round = 0; round < 6; round++) {
+      if (isCancelled?.call() == true) throw const CygnusAgentCancelled();
       late final Map<String, dynamic> response;
       try {
         response = await _request(
@@ -65,6 +71,7 @@ class GroqCygnusService {
           tools: tools,
         );
       } on GroqCygnusException catch (error) {
+        if (isCancelled?.call() == true) throw const CygnusAgentCancelled();
         if (error.statusCode == 429 && lastSuccessfulTool != null) {
           final result = lastSuccessfulResult;
           if (result == null) rethrow;
@@ -73,6 +80,7 @@ class GroqCygnusService {
         }
         rethrow;
       }
+      if (isCancelled?.call() == true) throw const CygnusAgentCancelled();
 
       final choice = _firstChoice(response);
       final message = _asMap(choice['message']);
@@ -102,6 +110,7 @@ class GroqCygnusService {
           ? toolCalls
           : clarificationCalls.take(1);
       for (final call in callsToExecute) {
+        if (isCancelled?.call() == true) throw const CygnusAgentCancelled();
         final function = _asMap(call['function']);
         final name = function['name']?.toString() ?? '';
         final rawArgs = function['arguments']?.toString() ?? '{}';
@@ -116,6 +125,7 @@ class GroqCygnusService {
         } else {
           result = await executeTool(name, args);
         }
+        if (isCancelled?.call() == true) throw const CygnusAgentCancelled();
         lastSuccessfulTool = null;
         lastSuccessfulResult = null;
         if (result['ok'] == true) {

@@ -38,11 +38,16 @@ class CygnusController extends ChangeNotifier {
   final List<CygnusSessionSummary> _sessions = <CygnusSessionSummary>[];
   final LinkedList<_CygnusInstructionEntry> _instructionQueue =
       LinkedList<_CygnusInstructionEntry>();
+  final Set<String> _cancelledInstructionIds = <String>{};
   Future<void> _queuePersistenceTail = Future<void>.value();
+  Completer<void>? _queueDrainCompleter;
+  Completer<void>? _busyCompleter;
+  int _busyOperationCount = 0;
 
   bool _initialized = false;
   bool _busy = false;
   bool _processingQueue = false;
+  bool _cancellingInstructionQueue = false;
   bool _restoringQueue = false;
   bool _activeInstructionHadSideEffect = false;
   String? _activeToolFailure;
@@ -63,6 +68,8 @@ class CygnusController extends ChangeNotifier {
   PendingCygnusAction? _pendingAction;
   _PendingCygnusRetry? _pendingRetry;
   CygnusQueuedInstruction? _activeInstruction;
+  String? _executingInstructionId;
+  String? _confirmingActionInstructionId;
   int _completedInstructionCount = 0;
   int _skippedInstructionCount = 0;
   int _instructionBatchSize = 0;
@@ -74,6 +81,29 @@ class CygnusController extends ChangeNotifier {
   List<CygnusSessionSummary> get sessions => List.unmodifiable(_sessions);
   bool get initialized => _initialized;
   bool get busy => _busy;
+  bool get hasPendingInstructions =>
+      _instructionQueue.isNotEmpty ||
+      (_activeInstruction != null &&
+          !_cancelledInstructionIds.contains(_activeInstruction!.id)) ||
+      _pendingAction != null ||
+      _pendingRetry != null;
+  bool get cancellingInstructionQueue => _cancellingInstructionQueue;
+  void _beginBusyOperation() {
+    if (_busyOperationCount == 0) _busyCompleter = Completer<void>();
+    _busyOperationCount++;
+    _busy = true;
+  }
+
+  void _endBusyOperation() {
+    if (_busyOperationCount == 0) return;
+    _busyOperationCount--;
+    if (_busyOperationCount != 0) return;
+    _busy = false;
+    final completion = _busyCompleter;
+    _busyCompleter = null;
+    if (completion != null && !completion.isCompleted) completion.complete();
+  }
+
   CygnusQueuedInstruction? get _firstQueuedInstruction =>
       _instructionQueue.isEmpty ? null : _instructionQueue.first.instruction;
   List<CygnusQueuedInstruction> get _instructionSnapshot => _instructionQueue
@@ -213,19 +243,31 @@ class CygnusController extends ChangeNotifier {
   }
 
   Future<void> newChat() async {
-    if (_busy ||
-        _instructionQueue.isNotEmpty ||
-        _pendingAction != null ||
-        _pendingRetry != null) {
-      return;
+    while (true) {
+      if (hasPendingInstructions) {
+        await cancelInstructionQueue();
+        final queueDrain = _queueDrainCompleter;
+        if (queueDrain != null) await queueDrain.future;
+        continue;
+      }
+      final operation = _busyCompleter;
+      if (!_busy || operation == null) break;
+      await operation.future;
     }
+    if (_busy || _loadingSession) return;
     await _createNewChat();
   }
 
   Future<void> _createNewChat() async {
     _pendingAction = null;
     _pendingRetry = null;
+    _activeInstruction = null;
+    _cancelledInstructionIds.clear();
     _lastLeafResult = null;
+    _error = null;
+    _completedInstructionCount = 0;
+    _skippedInstructionCount = 0;
+    _instructionBatchSize = 0;
     _messages.clear();
     _sessionId = await _store.createSession(languageCode: _languageCode);
     final welcome = _assistantMessage(
@@ -301,6 +343,7 @@ class CygnusController extends ChangeNotifier {
     try {
       _sessionId = id;
       _pendingAction = null;
+      _cancelledInstructionIds.clear();
       _messages
         ..clear()
         ..addAll(await _store.loadMessages(id));
@@ -340,6 +383,99 @@ class CygnusController extends ChangeNotifier {
       await newChat();
     } else {
       await openSession(_sessions.first.id);
+    }
+  }
+
+  Future<void> clearCurrentChat() async {
+    if (_loadingSession) return;
+    if (hasPendingInstructions) {
+      await cancelInstructionQueue();
+      final queueDrain = _queueDrainCompleter;
+      if (queueDrain != null) await queueDrain.future;
+    }
+    while (true) {
+      if (hasPendingInstructions) {
+        await cancelInstructionQueue();
+        final queueDrain = _queueDrainCompleter;
+        if (queueDrain != null) await queueDrain.future;
+        continue;
+      }
+      final operation = _busyCompleter;
+      if (!_busy || operation == null) break;
+      await operation.future;
+    }
+    if (_busy) return;
+
+    final id = _sessionId;
+    if (id == null) return;
+    await _store.clearSessionMessages(id);
+    _messages.clear();
+    _pendingAction = null;
+    _pendingRetry = null;
+    _activeInstruction = null;
+    _lastLeafResult = null;
+    _error = null;
+    _completedInstructionCount = 0;
+    _skippedInstructionCount = 0;
+    _instructionBatchSize = 0;
+    final welcome = _assistantMessage(
+      'Hi, I’m Cygnus. You can ask me about your farm, control motors, create plans, check trends, or scan a leaf.',
+    );
+    _messages.add(welcome);
+    await _store.saveMessage(id, welcome);
+    await _refreshSessions();
+    notifyListeners();
+  }
+
+  Future<void> cancelInstructionQueue() async {
+    if (_cancellingInstructionQueue || !hasPendingInstructions) return;
+    _cancellingInstructionQueue = true;
+    try {
+      final queue = _instructionSnapshot;
+      final cancelledIds = <String>{
+        ...queue.map((instruction) => instruction.id),
+        if (_activeInstruction != null) _activeInstruction!.id,
+        if (_pendingRetry?.instruction != null) _pendingRetry!.instruction!.id,
+      };
+      _cancelledInstructionIds.addAll(cancelledIds);
+      final runningId =
+          _executingInstructionId ?? _confirmingActionInstructionId;
+      for (final id in cancelledIds) {
+        if (id != runningId) _cancelledInstructionIds.remove(id);
+      }
+      notifyListeners();
+      var persisted = true;
+      try {
+        await _persistInstructionQueue(const <CygnusQueuedInstruction>[]);
+      } catch (error, stack) {
+        persisted = false;
+        debugPrint(
+          'Could not persist Cygnus queue cancellation: $error\n$stack',
+        );
+      }
+
+      _replaceInstructionQueue(const <CygnusQueuedInstruction>[]);
+      _pendingAction = null;
+      final retry = _pendingRetry;
+      _pendingRetry = null;
+      if (retry != null) {
+        await _resolveRetryMessage(retry.id, 'Cancelled.');
+      }
+      _skippedInstructionCount += queue.length;
+      if (runningId == null) _activeInstruction = null;
+      _error = persisted
+          ? null
+          : 'The instructions were stopped in this chat, but the cancellation could not be saved and may reappear after reopening.';
+      await _append(
+        _assistantMessage(
+          persisted
+              ? 'Cancelled the active and queued instructions. Any device command already sent may still take effect; check the device state.'
+              : _error!,
+        ),
+      );
+    } finally {
+      _cancellingInstructionQueue = false;
+      notifyListeners();
     }
   }
 
@@ -462,7 +598,7 @@ class CygnusController extends ChangeNotifier {
   }) async {
     if (_disposed) return;
     if (_sessionId == null) await _createNewChat();
-    _busy = true;
+    _beginBusyOperation();
     notifyListeners();
     try {
       await _processInstruction(
@@ -471,7 +607,7 @@ class CygnusController extends ChangeNotifier {
         instructionId: _id('direct'),
       );
     } finally {
-      _busy = false;
+      _endBusyOperation();
       notifyListeners();
       if (_instructionQueue.isNotEmpty) {
         unawaited(_drainInstructionQueue());
@@ -618,7 +754,9 @@ class CygnusController extends ChangeNotifier {
     }
 
     _processingQueue = true;
-    _busy = true;
+    final completion = Completer<void>();
+    _queueDrainCompleter = completion;
+    _beginBusyOperation();
     notifyListeners();
     try {
       while (_instructionQueue.isNotEmpty &&
@@ -628,6 +766,7 @@ class CygnusController extends ChangeNotifier {
           !_disposed) {
         final instruction = _firstQueuedInstruction!;
         _activeInstruction = instruction.copyWith(started: true);
+        _executingInstructionId = instruction.id;
         _replaceFirstInstruction(_activeInstruction!);
         try {
           await _persistInstructionQueue();
@@ -637,25 +776,35 @@ class CygnusController extends ChangeNotifier {
           );
           _replaceFirstInstruction(instruction);
           _activeInstruction = null;
+          _executingInstructionId = null;
           _error =
               'Could not safely start the saved queue. No new action was sent.';
           await _append(_assistantMessage(_error!));
           break;
         }
         notifyListeners();
-        _activeInstructionHadSideEffect = false;
-        _activeToolFailure = null;
         try {
+          if (_cancelledInstructionIds.contains(instruction.id)) {
+            throw const CygnusAgentCancelled();
+          }
+          _activeInstructionHadSideEffect = false;
+          _activeToolFailure = null;
           await _processInstruction(
             _instructionPromptText(instruction),
             fromVoice: instruction.fromVoice,
             instructionId: instruction.id,
           );
+          if (_cancelledInstructionIds.contains(instruction.id)) {
+            throw const CygnusAgentCancelled();
+          }
           if (_pendingAction == null &&
               _pendingRetry == null &&
               !_firstQueuedInstruction!.awaitingClarification) {
             await _completeActiveInstruction();
           }
+        } on CygnusAgentCancelled {
+          _cancelledInstructionIds.remove(instruction.id);
+          _activeInstruction = null;
         } catch (error, stack) {
           debugPrint('Cygnus queued instruction failed: $error\n$stack');
           final message = _friendlyAiError(error);
@@ -669,8 +818,13 @@ class CygnusController extends ChangeNotifier {
       }
     } finally {
       _processingQueue = false;
-      _busy = false;
+      _executingInstructionId = null;
+      _endBusyOperation();
       notifyListeners();
+      if (identical(_queueDrainCompleter, completion)) {
+        _queueDrainCompleter = null;
+      }
+      completion.complete();
       _flushDeferredDecision();
       if (queuedInstructionCount == 0 &&
           _instructionQueue.isEmpty &&
@@ -722,11 +876,13 @@ class CygnusController extends ChangeNotifier {
     bool appendUserMessage = true,
     int retryCount = 0,
   }) async {
+    _throwIfInstructionCancelled(instructionId);
     if (_sessionId == null) await _createNewChat();
 
     final requestedLanguage = _explicitLanguageRequest(text);
     if (requestedLanguage != null && requestedLanguage != _languageCode) {
       await setLanguage(requestedLanguage);
+      _throwIfInstructionCancelled(instructionId);
     }
 
     final alreadyShown = _messages.any(
@@ -736,11 +892,13 @@ class CygnusController extends ChangeNotifier {
       final user = _userMessage(text, instructionId: instructionId);
       await _append(user);
       if (appendUserMessage) await _ensureSessionTitle(text);
+      _throwIfInstructionCancelled(instructionId);
     }
 
     final scopeReply = _localScopeReply(text);
     if (scopeReply != null) {
       await _append(_assistantMessage(scopeReply));
+      _throwIfInstructionCancelled(instructionId);
       if (fromVoice) await _handleVoiceReply(scopeReply);
       return;
     }
@@ -751,6 +909,7 @@ class CygnusController extends ChangeNotifier {
     final leafReply = _leafContextReply(text);
     if (leafReply != null) {
       await _append(_assistantMessage(leafReply));
+      _throwIfInstructionCancelled(instructionId);
       if (fromVoice) await _handleVoiceReply(leafReply);
       return;
     }
@@ -760,6 +919,7 @@ class CygnusController extends ChangeNotifier {
         _scheduleDateQuestion(),
         fromVoice: fromVoice,
       );
+      _throwIfInstructionCancelled(instructionId);
       return;
     }
     if (needsCygnusScheduleMeridiemClarification(text)) {
@@ -767,6 +927,7 @@ class CygnusController extends ChangeNotifier {
         _scheduleMeridiemQuestion(text),
         fromVoice: fromVoice,
       );
+      _throwIfInstructionCancelled(instructionId);
       return;
     }
 
@@ -775,7 +936,9 @@ class CygnusController extends ChangeNotifier {
     // "motor 2 start pannuda" uses the same ACK-verified controller as the
     // manual Motor screen. Timed/scheduled requests deliberately bypass this
     // fast path and go through the conversational agent.
+    _throwIfInstructionCancelled(instructionId);
     final fastReply = await _tryFastMotorCommand(text);
+    _throwIfInstructionCancelled(instructionId);
     if (fastReply != null) {
       await _append(_assistantMessage(fastReply));
       if (_activeToolFailure != null && _pendingAction == null) {
@@ -793,7 +956,6 @@ class CygnusController extends ChangeNotifier {
       return;
     }
 
-    _busy = true;
     _error = null;
     notifyListeners();
 
@@ -805,10 +967,14 @@ class CygnusController extends ChangeNotifier {
         systemInstruction: _systemInstruction(),
         conversation: _messages,
         tools: _toolDefinitions(),
-        executeTool: _executeTool,
+        executeTool: (name, args) => _executeTool(name, args, instructionId),
         model: model,
         reasoningEffort: reasoning,
+        isCancelled: () => _cancelledInstructionIds.contains(instructionId),
       );
+      if (_cancelledInstructionIds.contains(instructionId)) {
+        throw const CygnusAgentCancelled();
+      }
 
       _renderingReply = true;
       notifyListeners();
@@ -827,6 +993,8 @@ class CygnusController extends ChangeNotifier {
       _renderingReply = false;
       notifyListeners();
       replyForVoice = reply;
+    } on CygnusAgentCancelled {
+      rethrow;
     } catch (error, stack) {
       debugPrint('Cygnus request failed: $error\n$stack');
       _error = _friendlyAiError(error);
@@ -850,6 +1018,12 @@ class CygnusController extends ChangeNotifier {
 
     if (fromVoice && replyForVoice != null && mountedSafe) {
       await _handleVoiceReply(replyForVoice);
+    }
+  }
+
+  void _throwIfInstructionCancelled(String instructionId) {
+    if (_cancelledInstructionIds.contains(instructionId)) {
+      throw const CygnusAgentCancelled();
     }
   }
 
@@ -1113,7 +1287,7 @@ class CygnusController extends ChangeNotifier {
         _pendingRetry != null) {
       return;
     }
-    _busy = true;
+    _beginBusyOperation();
     _error = null;
     notifyListeners();
 
@@ -1125,9 +1299,8 @@ class CygnusController extends ChangeNotifier {
       payload: <String, dynamic>{'path': imagePath},
       createdAt: DateTime.now(),
     );
-    await _append(user);
-
     try {
+      await _append(user);
       await _plantAi.initialize();
       final prediction = await _plantAi.classifyFile(imagePath);
       final language = LeafLanguageInfo.fromCode(_languageCode);
@@ -1161,7 +1334,7 @@ class CygnusController extends ChangeNotifier {
           'I couldn’t analyze that leaf. Try a clear photo with one leaf centered.';
       await _append(_assistantMessage(_error!));
     } finally {
-      _busy = false;
+      _endBusyOperation();
       notifyListeners();
       if (_instructionQueue.isNotEmpty) {
         unawaited(_drainInstructionQueue());
@@ -1323,7 +1496,9 @@ class CygnusController extends ChangeNotifier {
   Future<void> confirmPendingAction() async {
     final action = _pendingAction;
     if (action == null || _busy) return;
-    _busy = true;
+    final instructionId = _activeInstruction?.id;
+    _confirmingActionInstructionId = instructionId;
+    _beginBusyOperation();
     notifyListeners();
     try {
       final result = await _executePending(action);
@@ -1339,8 +1514,10 @@ class CygnusController extends ChangeNotifier {
       debugPrint('Cygnus action confirmation failed: $error\n$stack');
       await _offerActionRetry(action, _friendlyAiError(error));
     } finally {
-      _busy = false;
+      _endBusyOperation();
       notifyListeners();
+      if (instructionId != null) _cancelledInstructionIds.remove(instructionId);
+      _confirmingActionInstructionId = null;
       _deferredDecision = null;
     }
     if (_pendingAction == null && _pendingRetry == null) {
@@ -1372,7 +1549,7 @@ class CygnusController extends ChangeNotifier {
       return;
     }
     _pendingRetry = null;
-    _busy = true;
+    _beginBusyOperation();
     _activeInstructionHadSideEffect = false;
     _activeToolFailure = null;
     final retryInstruction = retry.instruction;
@@ -1383,6 +1560,8 @@ class CygnusController extends ChangeNotifier {
         );
     final previousActiveInstruction = _activeInstruction;
     final active = retryIsQueued ? _firstQueuedInstruction : retryInstruction;
+    _executingInstructionId = active?.id;
+    var cancelled = false;
 
     try {
       if (active != null) {
@@ -1399,7 +1578,15 @@ class CygnusController extends ChangeNotifier {
       notifyListeners();
       final action = retry.action;
       if (action != null) {
+        if (retryInstruction != null &&
+            _cancelledInstructionIds.contains(retryInstruction.id)) {
+          throw const CygnusAgentCancelled();
+        }
         final result = await _executePending(action);
+        if (retryInstruction != null &&
+            _cancelledInstructionIds.contains(retryInstruction.id)) {
+          throw const CygnusAgentCancelled();
+        }
         final message = result['message']?.toString() ?? 'Done.';
         if (result['ok'] == true) {
           _pendingAction = null;
@@ -1433,6 +1620,13 @@ class CygnusController extends ChangeNotifier {
           }
         }
       }
+    } on CygnusAgentCancelled {
+      cancelled = true;
+      if (retryInstruction != null) {
+        _cancelledInstructionIds.remove(retryInstruction.id);
+      }
+      _pendingRetry = null;
+      _activeInstruction = null;
     } catch (error, stack) {
       debugPrint('Cygnus retry failed: $error\n$stack');
       final message = _friendlyAiError(error);
@@ -1451,11 +1645,17 @@ class CygnusController extends ChangeNotifier {
         );
       }
     } finally {
-      if (!retryIsQueued) {
+      if (cancelled) {
+        _activeInstruction = null;
+      } else if (!retryIsQueued) {
         _activeInstruction = previousActiveInstruction;
       }
-      _busy = false;
+      _executingInstructionId = null;
+      _endBusyOperation();
       notifyListeners();
+      if (retryInstruction != null) {
+        _cancelledInstructionIds.remove(retryInstruction.id);
+      }
       _deferredDecision = null;
     }
     if (_pendingAction == null && _pendingRetry == null) {
@@ -1910,8 +2110,15 @@ You may navigate the app using open_page when the user asks to open a page.
   Future<Map<String, Object?>> _executeTool(
     String name,
     Map<String, Object?> args,
+    String instructionId,
   ) async {
+    if (_cancelledInstructionIds.contains(instructionId)) {
+      throw const CygnusAgentCancelled();
+    }
     final result = await _executeToolInternal(name, args);
+    if (_cancelledInstructionIds.contains(instructionId)) {
+      throw const CygnusAgentCancelled();
+    }
     if (result['needsClarification'] == true) {
       return _requestInstructionClarification(
         result['question']?.toString() ??

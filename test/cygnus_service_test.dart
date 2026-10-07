@@ -80,6 +80,67 @@ void main() {
     },
   );
 
+  test('cancellation stops the agent before another tool round', () async {
+    var requestCount = 0;
+    var cancelled = false;
+    var toolCount = 0;
+    final service = GroqCygnusService(
+      client: MockClient((_) async {
+        requestCount++;
+        return http.Response(
+          jsonEncode({
+            'choices': [
+              {
+                'message': {
+                  'content': '',
+                  'tool_calls': [
+                    {
+                      'id': 'status-call',
+                      'function': {
+                        'name': 'get_current_status',
+                        'arguments': '{}',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+
+    await expectLater(
+      service.runAgent(
+        systemInstruction: 'Test instruction',
+        conversation: [
+          CygnusMessage(
+            id: 'user-1',
+            role: 'user',
+            text: 'Check status',
+            createdAt: DateTime.now(),
+          ),
+        ],
+        tools: const [],
+        executeTool: (name, arguments) async {
+          toolCount++;
+          cancelled = true;
+          return {'ok': true};
+        },
+        model: GroqCygnusService.fastModel,
+        reasoningEffort: 'low',
+        isCancelled: () => cancelled,
+      ),
+      throwsA(isA<CygnusAgentCancelled>()),
+    );
+    service.dispose();
+
+    expect(toolCount, 1);
+    expect(requestCount, 1);
+  });
+
   test(
     'clarification tool pauses the agent before any other tool runs',
     () async {

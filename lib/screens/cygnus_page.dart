@@ -111,6 +111,32 @@ class _CygnusPageState extends State<CygnusPage> {
     await context.read<CygnusController>().analyzeLeaf(image.path);
   }
 
+  Future<void> _confirmClearChat() async {
+    final confirmed =
+        await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('Clear this chat?'),
+            content: const Text(
+              'Messages and pending instructions in this conversation will be cleared.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('Keep chat'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('Clear chat'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+    if (!confirmed || !mounted) return;
+    await context.read<CygnusController>().clearCurrentChat();
+  }
+
   Future<void> _showAttachmentSheet() async {
     await showModalBottomSheet<void>(
       context: context,
@@ -356,6 +382,7 @@ class _CygnusPageState extends State<CygnusPage> {
               onNewChat: cygnus.newChat,
               onVoiceReplyChanged: cygnus.setVoiceReply,
               onLanguageChanged: cygnus.setLanguage,
+              onClearChat: _confirmClearChat,
             ),
             Expanded(
               child: cygnus.loadingSession
@@ -464,6 +491,9 @@ class _CygnusPageState extends State<CygnusPage> {
               onChooseTime: _chooseClarificationTime,
               restoring: cygnus.restoringQueue,
               failedInstruction: cygnus.pendingRetryInstruction,
+              canCancel: cygnus.hasPendingInstructions,
+              cancelling: cygnus.cancellingInstructionQueue,
+              onCancelQueue: cygnus.cancelInstructionQueue,
             ),
           ),
       ],
@@ -928,6 +958,7 @@ class _CygnusBar extends StatelessWidget {
     required this.onNewChat,
     required this.onVoiceReplyChanged,
     required this.onLanguageChanged,
+    required this.onClearChat,
   });
 
   final String languageCode;
@@ -939,6 +970,7 @@ class _CygnusBar extends StatelessWidget {
   final Future<void> Function() onNewChat;
   final ValueChanged<bool> onVoiceReplyChanged;
   final Future<void> Function(String) onLanguageChanged;
+  final Future<void> Function() onClearChat;
 
   static const _languageLabels = <String, String>{
     'en': 'EN',
@@ -1111,6 +1143,7 @@ class _CygnusBar extends StatelessWidget {
             onSelected: (value) {
               if (value == 'history') onSessions();
               if (value == 'new') onNewChat();
+              if (value == 'clear') onClearChat();
             },
             itemBuilder: (_) => const [
               PopupMenuItem(
@@ -1129,6 +1162,15 @@ class _CygnusBar extends StatelessWidget {
                   contentPadding: EdgeInsets.zero,
                   leading: Icon(Icons.history_rounded),
                   title: Text('Conversations'),
+                ),
+              ),
+              PopupMenuItem(
+                value: 'clear',
+                child: ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.delete_sweep_outlined),
+                  title: Text('Clear chat'),
                 ),
               ),
             ],
@@ -2049,6 +2091,9 @@ class _InstructionQueueOverlay extends StatelessWidget {
     required this.onChooseTime,
     required this.restoring,
     required this.failedInstruction,
+    required this.canCancel,
+    required this.cancelling,
+    required this.onCancelQueue,
   });
 
   final String? active;
@@ -2070,6 +2115,9 @@ class _InstructionQueueOverlay extends StatelessWidget {
   final Future<void> Function() onChooseTime;
   final bool restoring;
   final String? failedInstruction;
+  final bool canCancel;
+  final bool cancelling;
+  final Future<void> Function() onCancelQueue;
 
   @override
   Widget build(BuildContext context) {
@@ -2205,6 +2253,29 @@ class _InstructionQueueOverlay extends StatelessWidget {
                   ? AppTheme.amber
                   : AppTheme.emerald,
             ),
+            if (canCancel) ...[
+              const SizedBox(height: 6),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: cancelling ? null : onCancelQueue,
+                  icon: cancelling
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.cancel_outlined, size: 16),
+                  label: Text(
+                    cancelling ? 'Cancelling…' : 'Cancel instructions',
+                  ),
+                  style: TextButton.styleFrom(
+                    foregroundColor: AppTheme.red,
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),
