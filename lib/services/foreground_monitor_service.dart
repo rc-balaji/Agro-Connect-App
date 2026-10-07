@@ -387,7 +387,6 @@ class AgroForegroundTaskHandler extends TaskHandler {
       if (received.topic == MqttConfig.telemetryTopic) {
         _telemetry = payload;
         _lastTelemetryAt = DateTime.now();
-        _deviceReportedOnline = true;
         unawaited(_updatePersistentNotification(force: false));
       } else if (received.topic == MqttConfig.statusTopic) {
         _deviceReportedOnline = _bool(payload['online'], _deviceReportedOnline);

@@ -419,7 +419,7 @@ class CygnusController extends ChangeNotifier {
               (part) => !isSeparateCygnusInstructionDuringClarification(part),
             )
             .toList(growable: false);
-        await _queueInstructionSegments(additions, fromVoice: fromVoice);
+        await _dispatchInstructionSegments(additions, fromVoice: fromVoice);
         if (answerParts.isNotEmpty) {
           await _answerInstructionClarification(
             answerParts.join('\n'),
@@ -434,7 +434,49 @@ class CygnusController extends ChangeNotifier {
 
     final instructions = splitCygnusInstructions(text);
     if (instructions.isEmpty) return;
-    await _queueInstructionSegments(instructions, fromVoice: fromVoice);
+    await _dispatchInstructionSegments(instructions, fromVoice: fromVoice);
+  }
+
+  Future<void> _dispatchInstructionSegments(
+    List<String> instructions, {
+    required bool fromVoice,
+  }) async {
+    final plans = instructions
+        .where(isCygnusPlanInstruction)
+        .toList(growable: false);
+    final normalRequests = instructions
+        .where((instruction) => !isCygnusPlanInstruction(instruction))
+        .toList(growable: false);
+
+    if (plans.isNotEmpty) {
+      await _queueInstructionSegments(plans, fromVoice: fromVoice);
+    }
+    for (final instruction in normalRequests) {
+      await _runDirectInstruction(instruction, fromVoice: fromVoice);
+    }
+  }
+
+  Future<void> _runDirectInstruction(
+    String text, {
+    required bool fromVoice,
+  }) async {
+    if (_disposed) return;
+    if (_sessionId == null) await _createNewChat();
+    _busy = true;
+    notifyListeners();
+    try {
+      await _processInstruction(
+        text,
+        fromVoice: fromVoice,
+        instructionId: _id('direct'),
+      );
+    } finally {
+      _busy = false;
+      notifyListeners();
+      if (_instructionQueue.isNotEmpty) {
+        unawaited(_drainInstructionQueue());
+      }
+    }
   }
 
   Future<void> _queueInstructionSegments(
@@ -738,7 +780,11 @@ class CygnusController extends ChangeNotifier {
       await _append(_assistantMessage(fastReply));
       if (_activeToolFailure != null && _pendingAction == null) {
         await _offerInstructionRetry(
-          _activeInstruction!,
+          _instructionForRetry(
+            text,
+            instructionId: instructionId,
+            fromVoice: fromVoice,
+          ),
           _activeToolFailure!,
           retryCount: retryCount,
         );
@@ -769,7 +815,11 @@ class CygnusController extends ChangeNotifier {
       await _appendAnimatedAssistant(reply);
       if (_activeToolFailure != null && _pendingAction == null) {
         await _offerInstructionRetry(
-          _activeInstruction!,
+          _instructionForRetry(
+            text,
+            instructionId: instructionId,
+            fromVoice: fromVoice,
+          ),
           _activeToolFailure!,
           retryCount: retryCount,
         );
@@ -783,7 +833,11 @@ class CygnusController extends ChangeNotifier {
       await _append(_assistantMessage(_error!));
       if (_pendingAction == null) {
         await _offerInstructionRetry(
-          _activeInstruction!,
+          _instructionForRetry(
+            text,
+            instructionId: instructionId,
+            fromVoice: fromVoice,
+          ),
           _error!,
           retryCount: retryCount,
         );
@@ -797,6 +851,20 @@ class CygnusController extends ChangeNotifier {
     if (fromVoice && replyForVoice != null && mountedSafe) {
       await _handleVoiceReply(replyForVoice);
     }
+  }
+
+  CygnusQueuedInstruction _instructionForRetry(
+    String text, {
+    required String instructionId,
+    required bool fromVoice,
+  }) {
+    final active = _activeInstruction;
+    if (active != null && active.id == instructionId) return active;
+    return CygnusQueuedInstruction(
+      id: instructionId,
+      text: text,
+      fromVoice: fromVoice,
+    );
   }
 
   Future<void> _handleVoiceReply(String reply) async {
@@ -1169,6 +1237,13 @@ class CygnusController extends ChangeNotifier {
     _voiceLevel = 0;
     notifyListeners();
     if (transcript.isEmpty) return;
+    if (isCygnusVoiceFiller(transcript)) {
+      await _append(_userMessage(transcript));
+      if (_voiceConversation && !_disposed) {
+        await startVoiceInput(keepConversation: true, stopCurrentSpeech: false);
+      }
+      return;
+    }
     await sendText(transcript, fromVoice: true);
   }
 
@@ -1299,9 +1374,14 @@ class CygnusController extends ChangeNotifier {
     _busy = true;
     _activeInstructionHadSideEffect = false;
     _activeToolFailure = null;
-    final active = _instructionQueue.isEmpty
-        ? retry.instruction
-        : _firstQueuedInstruction;
+    final retryInstruction = retry.instruction;
+    final retryIsQueued =
+        retryInstruction != null &&
+        _instructionSnapshot.any(
+          (instruction) => instruction.id == retryInstruction.id,
+        );
+    final previousActiveInstruction = _activeInstruction;
+    final active = retryIsQueued ? _firstQueuedInstruction : retryInstruction;
 
     try {
       if (active != null) {
@@ -1309,7 +1389,7 @@ class CygnusController extends ChangeNotifier {
           started: true,
           retryCount: active.retryCount + 1,
         );
-        if (_instructionQueue.isNotEmpty) {
+        if (retryIsQueued) {
           _replaceFirstInstruction(_activeInstruction!);
           await _persistInstructionQueue();
         }
@@ -1323,7 +1403,11 @@ class CygnusController extends ChangeNotifier {
         if (result['ok'] == true) {
           _pendingAction = null;
           await _append(_assistantMessage(message));
-          await _completeActiveInstruction();
+          if (retryIsQueued) {
+            await _completeActiveInstruction();
+          } else {
+            _activeInstruction = null;
+          }
         } else {
           await _offerActionRetry(
             action,
@@ -1341,7 +1425,11 @@ class CygnusController extends ChangeNotifier {
           retryCount: instruction.retryCount,
         );
         if (_pendingAction == null && _pendingRetry == null) {
-          await _completeActiveInstruction();
+          if (retryIsQueued) {
+            await _completeActiveInstruction();
+          } else {
+            _activeInstruction = null;
+          }
         }
       }
     } catch (error, stack) {
@@ -1362,6 +1450,9 @@ class CygnusController extends ChangeNotifier {
         );
       }
     } finally {
+      if (!retryIsQueued) {
+        _activeInstruction = previousActiveInstruction;
+      }
       _busy = false;
       notifyListeners();
       _deferredDecision = null;
@@ -1379,7 +1470,15 @@ class CygnusController extends ChangeNotifier {
       return;
     }
     try {
-      await _skipActiveInstruction();
+      final retryInstruction = retry.instruction;
+      final retryIsQueued =
+          retryInstruction != null &&
+          _instructionSnapshot.any(
+            (instruction) => instruction.id == retryInstruction.id,
+          );
+      if (retryIsQueued || retry.action != null) {
+        await _skipActiveInstruction();
+      }
       _pendingRetry = null;
       if (retry.action != null) _pendingAction = null;
       await _resolveRetryMessage(
@@ -2514,7 +2613,7 @@ You may navigate the app using open_page when the user asks to open a page.
     // Any timing/recurrence cue makes this a plan request rather than an
     // immediate control request.
     final planCue = RegExp(
-      r'(schedule|tomorrow|naalaik|nalai|நாளை|daily|every day|monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon\b|tue\b|wed\b|thu\b|fri\b|sat\b|sun\b|after\b|later\b|\bsec(?:ond)?s?\b|\bmins?\b|minute|hour|நிமிடம்|மணி|\d{1,2}:\d{2})',
+      r'(schedule|tomorrow|naalaik|nalai|நாளை|daily|every day|monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon\b|tue\b|wed\b|thu\b|fri\b|sat\b|sun\b|after\b|later\b|\bsec(?:ond)?s?\b|\bmins?\b|minute|hour|நிமிடம்|மணி|\d{1,2}:\d{2}|\b(?:at|around|by)\s+\d{1,2}\b|\b\d{1,2}\s*(?:a\.?m\.?|p\.?m\.?)\b)',
     );
     if (planCue.hasMatch(normalized)) return null;
 

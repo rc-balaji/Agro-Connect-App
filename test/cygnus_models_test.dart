@@ -63,6 +63,29 @@ void main() {
     );
   });
 
+  test(
+    'only plan and schedule requests use the persistent instruction queue',
+    () {
+      expect(isCygnusPlanInstruction('Schedule motor 1 for tomorrow'), isTrue);
+      expect(isCygnusPlanInstruction('மோட்டார் அட்டவணை நாளை'), isTrue);
+      expect(isCygnusPlanInstruction('Show my motor plans'), isTrue);
+      expect(isCygnusPlanInstruction('Motor 1 tomorrow at 6'), isTrue);
+      expect(isCygnusPlanInstruction('Current water level enna?'), isFalse);
+      expect(isCygnusPlanInstruction('Is motor 1 on now?'), isFalse);
+      expect(isCygnusPlanInstruction('Why is the temperature high?'), isFalse);
+    },
+  );
+
+  test(
+    'voice fillers remain recognizable without turning into AI requests',
+    () {
+      for (final filler in ['ah', 'Ahn.', 'umm', 'hmm!', 'ஆ']) {
+        expect(isCygnusVoiceFiller(filler), isTrue, reason: filler);
+      }
+      expect(isCygnusVoiceFiller('ah current temperature enna'), isFalse);
+    },
+  );
+
   test('schedule instructions without a start date need clarification', () {
     expect(
       needsCygnusScheduleDateClarification(
@@ -149,6 +172,12 @@ void main() {
       isFalse,
     );
     expect(isSeparateCygnusInstructionDuringClarification('PM'), isFalse);
+    expect(
+      isSeparateCygnusInstructionDuringClarification(
+        'What is the current water level?',
+      ),
+      isTrue,
+    );
   });
 
   test('queued instruction round trips state before restart recovery', () {

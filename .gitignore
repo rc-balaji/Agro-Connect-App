@@ -2,6 +2,7 @@
 .packages
 .pub/
 build/
+cloudflare-cygnus/node_modules/
 android/.gradle/
 android/local.properties
 android/key.properties

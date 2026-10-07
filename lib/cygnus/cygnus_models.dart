@@ -178,6 +178,46 @@ List<String> splitCygnusInstructions(String input) => input
     .where((part) => part.isNotEmpty)
     .toList(growable: false);
 
+bool isCygnusPlanInstruction(String input) {
+  final value = input.toLowerCase();
+  final explicitPlan =
+      RegExp(
+        r'\b(schedule|scheduling|scheduled|reschedule|plan|plans)\b',
+      ).hasMatch(value) ||
+      value.contains('அட்டவணை') ||
+      value.contains('திட்டம்') ||
+      value.contains('शेड्यूल') ||
+      value.contains('योजना') ||
+      value.contains('ഷെഡ്യൂൾ') ||
+      value.contains('പദ്ധതി') ||
+      value.contains('ವೇಳಾಪಟ್ಟಿ') ||
+      value.contains('ಯೋಜನೆ');
+  if (explicitPlan) return true;
+
+  final mentionsMotor =
+      RegExp(r'\bmotor\b').hasMatch(value) || value.contains('மோட்டார்');
+  final timingCue =
+      RegExp(
+        r'\b(today|tomorrow|naalaik\w*|nalai\w*|daily|weekly|every day|'
+        r'monday|tuesday|wednesday|thursday|friday|saturday|sunday|'
+        r'after|later|in \d+|at \d{1,2}|\d{1,2}:\d{2}|'
+        r'\d+\s*(?:minutes?|hours?|mins?|secs?))\b',
+      ).hasMatch(value) ||
+      RegExp(r'நாளை|தினமும்|மணி|நிமிடம்').hasMatch(value);
+  return mentionsMotor && timingCue;
+}
+
+bool isCygnusVoiceFiller(String input) {
+  final value = input
+      .trim()
+      .toLowerCase()
+      .replaceAll(RegExp(r"""[.,!?…'"’]+$"""), '')
+      .trim();
+  return RegExp(
+    r'^(?:a+h+|ahn+|uh+|um+|hmm+|mm+|mhm+|எம்+|அம்+|ஆ+|ம்+)$',
+  ).hasMatch(value);
+}
+
 bool needsCygnusScheduleDateClarification(String input) {
   final value = input.toLowerCase();
   final scheduleIntent =
@@ -322,7 +362,8 @@ bool isSeparateCygnusInstructionDuringClarification(String input) {
   final standaloneRequest = RegExp(
     r'^\s*(?:please\s+)?'
     r'(?:check|show|list|open|scan|analy[sz]e|go to|navigate|tell me|'
-    r"what(?:'s|\s+is)|how much|status|temperature|humidity|soil|water)\b",
+    r"what(?:'s|\s+is)|why|how|when|where|can you|could you|is|are|"
+    r'enn[a]?|eppadi|evlo|yen|status|temperature|humidity|soil|water)\b',
   ).hasMatch(value);
   return newSchedule || immediateMotorCommand || standaloneRequest;
 }

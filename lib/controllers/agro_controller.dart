@@ -16,9 +16,9 @@ class AgroController extends ChangeNotifier {
     MqttService? mqttService,
     NetworkService? networkService,
     HistoryStore? historyStore,
-  })  : _mqtt = mqttService ?? MqttService(),
-        _networkService = networkService ?? NetworkService(),
-        _historyStore = historyStore ?? HistoryStore();
+  }) : _mqtt = mqttService ?? MqttService(),
+       _networkService = networkService ?? NetworkService(),
+       _historyStore = historyStore ?? HistoryStore();
 
   final MqttService _mqtt;
   final NetworkService _networkService;
@@ -69,7 +69,9 @@ class AgroController extends ChangeNotifier {
 
   bool get deviceOnline {
     final seen = _lastSeen;
-    if (!_mqttConnected || seen == null) return false;
+    if (!_mqttConnected || !_deviceReportedOnline || seen == null) {
+      return false;
+    }
     return DateTime.now().difference(seen) < MqttConfig.staleAfter;
   }
 
@@ -210,7 +212,6 @@ class AgroController extends ChangeNotifier {
     final now = DateTime.now();
     _telemetry = Telemetry.fromMap(payload, receivedAt: now);
     _lastSeen = now;
-    _deviceReportedOnline = true;
 
     _controls = _controls.copyWith(
       actual1: _telemetry.led1,
@@ -220,7 +221,8 @@ class AgroController extends ChangeNotifier {
     );
 
     if (_history.isEmpty ||
-        now.difference(_history.last.receivedAt) >= const Duration(seconds: 1)) {
+        now.difference(_history.last.receivedAt) >=
+            const Duration(seconds: 1)) {
       _history.add(_telemetry);
       if (_history.length > MqttConfig.maxHistoryPoints) {
         _history.removeRange(0, _history.length - MqttConfig.maxHistoryPoints);

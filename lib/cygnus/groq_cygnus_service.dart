@@ -52,14 +52,27 @@ class GroqCygnusService {
       <String, dynamic>{'role': 'system', 'content': systemInstruction},
       ..._conversationMessages(conversation),
     ];
+    String? lastSuccessfulTool;
+    Map<String, Object?>? lastSuccessfulResult;
 
     for (var round = 0; round < 6; round++) {
-      final response = await _request(
-        model: model,
-        reasoningEffort: reasoningEffort,
-        messages: messages,
-        tools: tools,
-      );
+      late final Map<String, dynamic> response;
+      try {
+        response = await _request(
+          model: model,
+          reasoningEffort: reasoningEffort,
+          messages: messages,
+          tools: tools,
+        );
+      } on GroqCygnusException catch (error) {
+        if (error.statusCode == 429 && lastSuccessfulTool != null) {
+          final result = lastSuccessfulResult;
+          if (result == null) rethrow;
+          final fallback = _toolFallbackReply(lastSuccessfulTool, result);
+          if (fallback != null) return fallback;
+        }
+        rethrow;
+      }
 
       final choice = _firstChoice(response);
       final message = _asMap(choice['message']);
@@ -103,6 +116,12 @@ class GroqCygnusService {
         } else {
           result = await executeTool(name, args);
         }
+        lastSuccessfulTool = null;
+        lastSuccessfulResult = null;
+        if (result['ok'] == true) {
+          lastSuccessfulTool = name;
+          lastSuccessfulResult = result;
+        }
 
         messages.add(<String, dynamic>{
           'role': 'tool',
@@ -136,6 +155,47 @@ class GroqCygnusService {
       code: 'tool_loop_limit',
       message: 'Cygnus reached the action limit for this request.',
     );
+  }
+
+  String? _toolFallbackReply(String name, Map<String, Object?> result) {
+    if (name == 'get_current_status') {
+      if (result['deviceOnline'] != true) {
+        return 'The farm device is offline, so current readings are not available.';
+      }
+      String reading(String key, String label, String unit) {
+        final value = result[key];
+        if (value is! num) return '';
+        return '$label ${value.toStringAsFixed(1)}$unit';
+      }
+
+      final readings = <String>[
+        reading('temperatureC', 'temperature', '°C'),
+        reading('humidityPercent', 'humidity', '%'),
+        reading('soilPercent', 'soil moisture', '%'),
+        reading('waterPercent', 'water level', '%'),
+      ].where((value) => value.isNotEmpty).toList(growable: false);
+      if (readings.isEmpty) return null;
+      return 'Current farm readings: ${readings.join(', ')}.';
+    }
+
+    if (name == 'get_metric_trend') {
+      final metric = switch (result['metric']) {
+        'temperature' => 'temperature',
+        'humidity' => 'humidity',
+        'soil' => 'soil moisture',
+        'water' => 'water level',
+        _ => null,
+      };
+      final latest = result['latest'];
+      final average = result['average'];
+      if (metric == null || latest is! num || average is! num) return null;
+      final unit = metric == 'temperature' ? '°C' : '%';
+      return 'Recent $metric trend: latest ${latest.toStringAsFixed(1)}$unit, '
+          'average ${average.toStringAsFixed(1)}$unit.';
+    }
+
+    final message = result['message']?.toString().trim() ?? '';
+    return message.isEmpty ? null : message;
   }
 
   Future<Map<String, dynamic>> _request({
